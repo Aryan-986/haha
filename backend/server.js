@@ -10,7 +10,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Attach Clerk Authentication Context (Only if keys are defined)
+// Attach Clerk Authentication Context
 if (process.env.CLERK_PUBLISHABLE_KEY && process.env.CLERK_SECRET_KEY) {
   app.use(clerkMiddleware());
 } else {
@@ -31,6 +31,7 @@ mongoose.connect(MONGO_URI)
           office: 'District Administration Office (DAO), Kathmandu',
           name: 'Citizenship & National ID Application',
           currentQueueCount: 15,
+          currentlyServingNumber: 100,
           activeCounters: 3,
           estimatedWaitMin: 45,
           crowdLevel: 'MODERATE CROWD'
@@ -43,10 +44,16 @@ mongoose.connect(MONGO_URI)
   })
   .catch((err) => console.error('MongoDB Connection Error:', err));
 
-// Routes
-app.use('/api', require('./routes/queueRoutes'));
-app.use('/api', require('./routes/workerRoutes'));
-app.use('/api/admin', require('./routes/adminRoutes'));
+// Routes Configuration
+const queueRoutes = require('./routes/queueRoutes');
+const workerRoutes = require('./routes/workerRoutes');
+
+app.use('/api', queueRoutes);
+app.use('/api', workerRoutes);
+
+if (require('fs').existsSync('./routes/adminRoutes.js')) {
+  app.use('/api/admin', require('./routes/adminRoutes'));
+}
 
 // Global 404 Route Handler
 app.use((req, res) => {

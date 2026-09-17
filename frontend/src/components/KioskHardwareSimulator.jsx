@@ -66,7 +66,7 @@ const KioskHardwareSimulator = ({ serviceId, onDispense }) => {
             <span className={`relative inline-flex rounded-full h-3 w-3 ${isAutoLoop ? 'bg-emerald-500' : 'bg-indigo-500'}`}></span>
           </span>
           <h3 className="text-sm font-semibold text-slate-200 tracking-wide uppercase">
-            Physical Kiosk Hardware Simulator
+            Physical Thermal Printer Simulator
           </h3>
         </div>
         {isAutoLoop && (

@@ -1,7 +1,11 @@
 const express = require('express');
 const router = express.Router();
+const mongoose = require('mongoose');
 const Service = require('../models/Service');
 const Ticket = require('../models/Ticket');
+
+// Helper function to validate MongoDB ObjectIds
+const isValidObjectId = (id) => mongoose.Types.ObjectId.isValid(id);
 
 // GET /api/services (Used by TicketTracker to poll live data)
 router.get('/services', async (req, res) => {
@@ -17,29 +21,40 @@ router.get('/services', async (req, res) => {
 // POST /api/worker/service/:id/call-next
 router.post('/worker/service/:id/call-next', async (req, res) => {
   try {
-    const service = await Service.findById(req.params.id);
-    if (!service) {
+    const { id } = req.params;
+
+    if (!isValidObjectId(id)) {
+      return res.status(400).json({ error: 'Invalid Service ID format' });
+    }
+
+    // Fetch existing service to evaluate current bounds
+    const existingService = await Service.findById(id);
+    if (!existingService) {
       return res.status(404).json({ error: 'Service not found' });
     }
 
-    // Increment currently serving token
-    service.currentlyServingNumber = (service.currentlyServingNumber || 100) + 1;
+    const nextServingNumber = (existingService.currentlyServingNumber || 100) + 1;
+    const nextQueueCount = Math.max(0, existingService.currentQueueCount - 1);
 
-    // Decrement remaining queue safely
-    if (service.currentQueueCount > 0) {
-      service.currentQueueCount -= 1;
-    }
+    const updatedService = await Service.findByIdAndUpdate(
+      id,
+      {
+        $set: {
+          currentlyServingNumber: nextServingNumber,
+          currentQueueCount: nextQueueCount
+        }
+      },
+      { new: true, runValidators: false }
+    );
 
-    await service.save();
-
-    const ticketNumber = `A-${service.currentlyServingNumber}`;
+    const ticketNumber = `A-${updatedService.currentlyServingNumber}`;
 
     res.json({
       message: 'Next ticket called successfully',
       ticketNumber,
-      currentlyServingNumber: service.currentlyServingNumber,
-      currentQueueCount: service.currentQueueCount,
-      activeCounters: service.activeCounters || 26
+      currentlyServingNumber: updatedService.currentlyServingNumber,
+      currentQueueCount: updatedService.currentQueueCount,
+      activeCounters: updatedService.activeCounters || 26
     });
   } catch (err) {
     console.error('SERVER ERROR in /worker/service/:id/call-next:', err);
@@ -50,18 +65,43 @@ router.post('/worker/service/:id/call-next', async (req, res) => {
 // PATCH /api/worker/service/:id/queue
 router.patch('/worker/service/:id/queue', async (req, res) => {
   try {
+    const { id } = req.params;
     const { action } = req.body;
-    const service = await Service.findById(req.params.id);
-    if (!service) return res.status(404).json({ error: 'Service not found' });
 
-    if (action === 'INCREMENT') service.currentQueueCount += 1;
-    if (action === 'DECREMENT') {
-      if (service.currentQueueCount > 0) service.currentQueueCount -= 1;
-      service.currentlyServingNumber = (service.currentlyServingNumber || 100) + 1;
+    if (!isValidObjectId(id)) {
+      return res.status(400).json({ error: 'Invalid Service ID format' });
     }
 
-    await service.save();
-    res.json(service);
+    const existingService = await Service.findById(id);
+    if (!existingService) {
+      return res.status(404).json({ error: 'Service not found' });
+    }
+
+    let updateQuery = {};
+
+    if (action === 'INCREMENT') {
+      updateQuery = { $inc: { currentQueueCount: 1 } };
+    } else if (action === 'DECREMENT') {
+      const nextQueueCount = Math.max(0, existingService.currentQueueCount - 1);
+      const nextServingNumber = (existingService.currentlyServingNumber || 100) + 1;
+      
+      updateQuery = {
+        $set: {
+          currentQueueCount: nextQueueCount,
+          currentlyServingNumber: nextServingNumber
+        }
+      };
+    } else {
+      return res.status(400).json({ error: 'Invalid queue adjustment action' });
+    }
+
+    const updatedService = await Service.findByIdAndUpdate(
+      id,
+      updateQuery,
+      { new: true, runValidators: false }
+    );
+
+    res.json(updatedService);
   } catch (err) {
     console.error('SERVER ERROR in /queue:', err);
     res.status(500).json({ error: 'Failed to adjust queue', details: err.message });
@@ -71,15 +111,24 @@ router.patch('/worker/service/:id/queue', async (req, res) => {
 // PATCH /api/worker/service/:id/counters
 router.patch('/worker/service/:id/counters', async (req, res) => {
   try {
+    const { id } = req.params;
     const { activeCounters } = req.body;
-    const service = await Service.findByIdAndUpdate(
-      req.params.id,
-      { activeCounters: Math.max(1, activeCounters) },
-      { new: true }
-    );
-    if (!service) return res.status(404).json({ error: 'Service not found' });
 
-    res.json(service);
+    if (!isValidObjectId(id)) {
+      return res.status(400).json({ error: 'Invalid Service ID format' });
+    }
+
+    const updatedService = await Service.findByIdAndUpdate(
+      id,
+      { $set: { activeCounters: Math.max(1, Number(activeCounters) || 1) } },
+      { new: true, runValidators: false }
+    );
+
+    if (!updatedService) {
+      return res.status(404).json({ error: 'Service not found' });
+    }
+
+    res.json(updatedService);
   } catch (err) {
     console.error('SERVER ERROR in /counters:', err);
     res.status(500).json({ error: 'Failed to update active counters', details: err.message });
@@ -90,19 +139,33 @@ router.patch('/worker/service/:id/counters', async (req, res) => {
 router.post('/kiosk/dispense-token', async (req, res) => {
   try {
     const { serviceId } = req.body;
-    let service = serviceId ? await Service.findById(serviceId) : await Service.findOne();
 
-    if (!service) {
+    let targetId = serviceId;
+
+    if (!targetId) {
+      const defaultService = await Service.findOne();
+      if (!defaultService) {
+        return res.status(404).json({ error: 'Service not found for dispensing token' });
+      }
+      targetId = defaultService._id;
+    } else if (!isValidObjectId(targetId)) {
+      return res.status(400).json({ error: 'Invalid Service ID format' });
+    }
+
+    const updatedService = await Service.findByIdAndUpdate(
+      targetId,
+      { $inc: { currentQueueCount: 1 } },
+      { new: true, runValidators: false }
+    );
+
+    if (!updatedService) {
       return res.status(404).json({ error: 'Service not found for dispensing token' });
     }
 
-    service.currentQueueCount += 1;
-    await service.save();
-
     res.json({
       message: 'Token Dispensed Successfully',
-      ticket: { ticketNumber: `A-${100 + service.currentQueueCount}` },
-      currentQueueCount: service.currentQueueCount
+      ticket: { ticketNumber: `A-${100 + updatedService.currentQueueCount}` },
+      currentQueueCount: updatedService.currentQueueCount
     });
   } catch (err) {
     console.error('SERVER ERROR in /kiosk/dispense-token:', err);
