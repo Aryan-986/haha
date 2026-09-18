@@ -152,21 +152,39 @@ router.get('/queue/:serviceId', async (req, res) => {
 router.post('/analyze', async (req, res) => {
   try {
     const { serviceId, currentQueue, bestTimeWindow } = req.body;
-    const service = await Service.findById(serviceId);
+    let service = null;
 
-    if (!service) return res.status(404).json({ error: 'Service not found' });
+    if (serviceId) {
+      try {
+        service = await Service.findById(serviceId);
+      } catch (e) {
+        // Ignore invalid ObjectId casting errors
+      }
+    }
 
-    let advice = "Visit during off-peak hours (3:00 PM - 4:00 PM) to minimize your waiting time.";
+    // Gracefully fallback to first available service if serviceId is missing or not found
+    if (!service) {
+      service = await Service.findOne();
+    }
+
+    const serviceName = service?.name || 'Citizenship & National ID Application';
+    const queueCount = currentQueue ?? service?.currentQueueCount ?? 15;
+    const window = bestTimeWindow || service?.bestTimeWindow || '3:00 PM - 4:00 PM';
+    const documents = (service?.requiredDocuments && service.requiredDocuments.length > 0)
+      ? service.requiredDocuments
+      : ['Citizenship Certificate', 'Passport Photos', 'Application Form', 'National ID Pre-enrollment Slip'];
+
+    let advice = `Visit during off-peak hours (${window}) to minimize your waiting time.`;
     if (typeof geminiService.generateVisitAdvice === 'function') {
       advice = await geminiService.generateVisitAdvice(
-        service.name,
-        currentQueue ?? service.currentQueueCount,
-        bestTimeWindow,
-        service.requiredDocuments || []
+        serviceName,
+        queueCount,
+        window,
+        documents
       );
     }
 
-    res.json({ advice, documents: service.requiredDocuments || [] });
+    res.json({ advice, documents });
   } catch (err) {
     console.error('ERROR in POST /api/analyze:', err);
     res.status(500).json({ error: 'AI analysis failed', details: err.message });

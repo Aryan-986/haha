@@ -88,7 +88,11 @@ export default function CitizenDashboard() {
       </div>
 
       {/* AI Advice Module */}
-      <GeminiAdviceCard />
+      <GeminiAdviceCard 
+        serviceId={service?._id}
+        currentQueue={queueData?.currentQueueCount}
+        bestTimeWindow={queueData?.bestTimeWindow}
+      />
     </main>
   );
 }

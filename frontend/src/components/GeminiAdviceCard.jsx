@@ -10,11 +10,12 @@ export default function GeminiAdviceCard({ serviceId, currentQueue, bestTimeWind
   const fetchAiAdvice = async () => {
     setLoading(true);
     try {
-      const res = await axios.post('http://localhost:5000/api/analyze', {
-        serviceId,
-        currentQueue,
-        bestTimeWindow
-      });
+      const payload = {};
+      if (serviceId) payload.serviceId = serviceId;
+      if (currentQueue !== undefined) payload.currentQueue = currentQueue;
+      if (bestTimeWindow) payload.bestTimeWindow = bestTimeWindow;
+
+      const res = await axios.post('http://localhost:5000/api/analyze', payload);
       setAdvice(res.data.advice);
       setDocuments(res.data.documents || []);
     } catch (err) {
@@ -30,7 +31,7 @@ export default function GeminiAdviceCard({ serviceId, currentQueue, bestTimeWind
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-2">
           <Sparkles className="w-5 h-5 text-indigo-400" />
-          <h3 className="text-lg font-bold text-white">Gemini AI Smart Assistant</h3>
+          <h3 className="text-lg font-bold text-white">AI Smart Assistant</h3>
         </div>
         
         <button
