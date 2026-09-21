@@ -2,85 +2,153 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import KioskHardwareSimulator from '../components/KioskHardwareSimulator';
 
-const API_BASE = 'http://localhost:5000/api';
+const API_BASE = 'http://localhost:5000/api/v1';
 
 const WorkerDashboard = () => {
-  const [service, setService] = useState(null);
-  const [currentTicket, setCurrentTicket] = useState('A-100');
+  // Multi-Tenant Context State
+  const [organizations, setOrganizations] = useState([]);
+  const [selectedOrgId, setSelectedOrgId] = useState('');
+  const [departments, setDepartments] = useState([]);
+  const [currentDeptId, setCurrentDeptId] = useState('');
+
+  // Queue & Ticket State
+  const [currentTicket, setCurrentTicket] = useState(null);
+  const [targetDeptId, setTargetDeptId] = useState('');
   const [loading, setLoading] = useState(true);
+  const [transferring, setTransferring] = useState(false);
   const [error, setError] = useState(null);
+  const [statusMessage, setStatusMessage] = useState('');
 
-  // Fetch initial service data
-  const fetchServiceData = async () => {
-    try {
-      const res = await axios.get(`${API_BASE}/services`);
-      if (res.data && res.data.length > 0) {
-        setService(res.data[0]);
-      }
-      setError(null);
-    } catch (err) {
-      console.error('Worker dashboard fetch error:', err);
-      setError('Failed to load service data');
-    } finally {
-      setLoading(false);
-    }
-  };
-
+  // Fetch initial Organizations list
   useEffect(() => {
-    fetchServiceData();
-    // Poll backend every 2 seconds to keep worker dashboard synced with live backend
-    const interval = setInterval(fetchServiceData, 2000);
-    return () => clearInterval(interval);
+    const fetchOrganizations = async () => {
+      try {
+        const res = await axios.get(`${API_BASE}/orgs`);
+        if (res.data && res.data.length > 0) {
+          setOrganizations(res.data);
+          setSelectedOrgId(res.data[0]._id);
+        }
+      } catch (err) {
+        console.error('Failed to load organizations:', err);
+        setError('Failed to connect to Multi-Tenant service.');
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchOrganizations();
   }, []);
+
+  // Fetch Departments when selected organization changes
+  useEffect(() => {
+    if (!selectedOrgId) return;
+
+    const fetchDepartments = async () => {
+      try {
+        const res = await axios.get(`${API_BASE}/orgs/${selectedOrgId}/departments`);
+        setDepartments(res.data || []);
+        if (res.data && res.data.length > 0) {
+          setCurrentDeptId(res.data[0]._id);
+        }
+      } catch (err) {
+        console.error('Failed to fetch departments:', err);
+      }
+    };
+
+    fetchDepartments();
+  }, [selectedOrgId]);
 
   // Call Next Ticket Action
   const handleCallNext = async () => {
-    if (!service?._id) return;
+    if (!currentDeptId) return;
+    setStatusMessage('');
     try {
-      const res = await axios.post(`${API_BASE}/worker/service/${service._id}/call-next`);
-      if (res.data?.ticketNumber) {
-        setCurrentTicket(res.data.ticketNumber);
+      const res = await axios.post(`${API_BASE}/worker/department/${currentDeptId}/call-next`);
+      if (res.data?.ticket) {
+        setCurrentTicket(res.data.ticket);
+      } else {
+        setStatusMessage('No waiting tickets in this queue.');
       }
-      fetchServiceData();
     } catch (err) {
       console.error('Call next error:', err);
+      setStatusMessage('Error calling next ticket.');
     }
   };
 
-  // Adjust Queue Count Manually
-  const handleQueueAdjust = async (action) => {
-    if (!service?._id) return;
-    try {
-      await axios.patch(`${API_BASE}/worker/service/${service._id}/queue`, { action });
-      fetchServiceData();
-    } catch (err) {
-      console.error('Queue adjust error:', err);
-    }
-  };
+  // Transfer Token Action
+  const handleTransferToken = async () => {
+    if (!currentTicket?._id || !targetDeptId) return;
+    setTransferring(true);
+    setStatusMessage('');
 
-  // Adjust Open Active Counters
-  const handleCounterAdjust = async (newCount) => {
-    if (!service?._id || newCount < 1) return;
     try {
-      await axios.patch(`${API_BASE}/worker/service/${service._id}/counters`, {
-        activeCounters: newCount
+      await axios.post(`${API_BASE}/tokens/transfer`, {
+        ticketId: currentTicket._id,
+        targetDeptId: targetDeptId,
+        workerId: 'WORKER_DESK_1'
       });
-      fetchServiceData();
+
+      const targetDeptName = departments.find((d) => d._id === targetDeptId)?.name || 'Target Department';
+      setStatusMessage(`Ticket ${currentTicket.ticketNumber || currentTicket} transferred to ${targetDeptName}!`);
+      setCurrentTicket(null);
+      setTargetDeptId('');
     } catch (err) {
-      console.error('Counter adjust error:', err);
+      console.error('Transfer token error:', err);
+      setStatusMessage('Failed to transfer ticket. Please try again.');
+    } finally {
+      setTransferring(false);
     }
   };
 
   if (loading) {
-    return <div className="p-8 text-center text-slate-400">Loading Counter Staff Portal...</div>;
+    return <div className="p-8 text-center text-slate-400">Loading Multi-Tenant Staff Portal...</div>;
   }
+
+  const activeDepartment = departments.find((d) => d._id === currentDeptId);
+  const availableTransferDestinations = departments.filter((d) => d._id !== currentDeptId);
 
   return (
     <div className="max-w-xl mx-auto p-6 space-y-6 bg-slate-900 text-slate-100 min-h-screen">
-      <header className="border-b border-slate-800 pb-4">
-        <h1 className="text-2xl font-bold">Counter Staff Portal</h1>
-        <p className="text-sm text-slate-400">{service?.office || 'District Administration Office (DAO)'}</p>
-        <p className="text-xs text-slate-500">{service?.name || 'Citizenship Application'}</p>
+      {/* Context Selector Bar */}
+      <header className="border-b border-slate-800 pb-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <h1 className="text-2xl font-bold">Counter Staff Portal</h1>
+          <span className="text-xs bg-indigo-500/20 text-indigo-300 px-2.5 py-1 rounded-full border border-indigo-500/30 font-medium">
+            Multi-Tenant
+          </span>
+        </div>
+
+        {/* Organization & Counter Dropdowns */}
+        <div className="grid grid-cols-2 gap-3 pt-2">
+          <div>
+            <label className="block text-xs font-semibold text-slate-400 mb-1">Organization</label>
+            <select
+              value={selectedOrgId}
+              onChange={(e) => setSelectedOrgId(e.target.value)}
+              className="w-full bg-slate-800 border border-slate-700 text-xs rounded-lg p-2 text-slate-200 focus:outline-none focus:border-indigo-500"
+            >
+              {organizations.map((org) => (
+                <option key={org._id} value={org._id}>
+                  {org.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-400 mb-1">Active Station/Room</label>
+            <select
+              value={currentDeptId}
+              onChange={(e) => setCurrentDeptId(e.target.value)}
+              className="w-full bg-slate-800 border border-slate-700 text-xs rounded-lg p-2 text-slate-200 focus:outline-none focus:border-indigo-500"
+            >
+              {departments.map((dept) => (
+                <option key={dept._id} value={dept._id}>
+                  {dept.name} ({dept.prefix}) {dept.isEntryLevel ? '[Entry]' : ''}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
       </header>
 
       {error && (
@@ -89,79 +157,69 @@ const WorkerDashboard = () => {
         </div>
       )}
 
-      {/* Hardware Kiosk API Simulator for Demo */}
-      {service && (
-        <KioskHardwareSimulator
-          serviceId={service._id}
-          onDispense={() => fetchServiceData()}
-        />
+      {statusMessage && (
+        <div className="bg-indigo-500/10 border border-indigo-500 text-indigo-300 p-3 rounded-md text-sm text-center font-medium">
+          {statusMessage}
+        </div>
       )}
 
-      {/* Now Serving Ticket Section */}
-      <div className="bg-slate-800 p-6 rounded-xl border border-slate-700 text-center space-y-2">
-        <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Now Serving</span>
-        <div className="text-5xl font-extrabold text-indigo-400 tracking-tight">{currentTicket}</div>
-        <p className="text-sm text-slate-400 pt-2">
-          Remaining Waiting: <span className="font-bold text-slate-200">{service?.currentQueueCount ?? 0}</span>
-        </p>
+      {/* Hardware Simulator Sync */}
+      {selectedOrgId && (
+        <KioskHardwareSimulator orgId={selectedOrgId} deptId={currentDeptId} />
+      )}
+
+      {/* Active Serving Card */}
+      <div className="bg-slate-800 p-6 rounded-xl border border-slate-700 space-y-4">
+        <div className="text-center space-y-1">
+          <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
+            Now Serving at {activeDepartment?.name || 'Station'}
+          </span>
+          <div className="text-5xl font-extrabold text-indigo-400 tracking-tight my-2">
+            {currentTicket?.ticketNumber || currentTicket || '---'}
+          </div>
+        </div>
 
         <button
           onClick={handleCallNext}
-          className="w-full mt-4 py-3 px-4 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-lg transition duration-200 shadow-lg shadow-emerald-900/20"
+          className="w-full py-3 px-4 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-lg transition duration-200 shadow-lg shadow-emerald-900/20"
         >
           ✓ Call Next Ticket
         </button>
-      </div>
 
-      {/* Live Simulation & Staff Controls */}
-      <div className="bg-slate-800 p-6 rounded-xl border border-slate-700 space-y-4">
-        <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-wider border-b border-slate-700 pb-2">
-          Live Simulation Controls
-        </h3>
+        {/* Multi-Stage Token Transfer Control */}
+        {currentTicket && (
+          <div className="pt-4 border-t border-slate-700/80 space-y-3">
+            <span className="text-xs font-semibold text-amber-400 uppercase tracking-wider block">
+              Transfer Patient/Citizen Downstream
+            </span>
 
-        {/* Manual Queue Adjust */}
-        <div className="flex items-center justify-between">
-          <span className="text-sm text-slate-400">Manual Queue Adjust</span>
-          <div className="flex items-center space-x-3">
-            <button
-              onClick={() => handleQueueAdjust('DECREMENT')}
-              className="w-8 h-8 rounded bg-slate-700 hover:bg-slate-600 flex items-center justify-center font-bold text-slate-200"
-            >
-              -
-            </button>
-            <span className="font-bold text-lg w-8 text-center">{service?.currentQueueCount ?? 0}</span>
-            <button
-              onClick={() => handleQueueAdjust('INCREMENT')}
-              className="w-8 h-8 rounded bg-slate-700 hover:bg-slate-600 flex items-center justify-center font-bold text-slate-200"
-            >
-              +
-            </button>
+            <div className="flex items-center space-x-2">
+              <select
+                value={targetDeptId}
+                onChange={(e) => setTargetDeptId(e.target.value)}
+                className="flex-1 bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-xs text-slate-200 focus:outline-none focus:border-amber-500"
+              >
+                <option value="">Select Target Counter/Room...</option>
+                {availableTransferDestinations.map((dept) => (
+                  <option key={dept._id} value={dept._id}>
+                    {dept.name} ({dept.prefix})
+                  </option>
+                ))}
+              </select>
+
+              <button
+                onClick={handleTransferToken}
+                disabled={!targetDeptId || transferring}
+                className="py-2.5 px-4 bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white text-xs font-semibold rounded-lg transition duration-200 whitespace-nowrap"
+              >
+                {transferring ? 'Transferring...' : '⇄ Transfer'}
+              </button>
+            </div>
           </div>
-        </div>
-
-        {/* Active Open Counters Adjust */}
-        <div className="flex items-center justify-between">
-          <span className="text-sm text-slate-400">Active Open Counters</span>
-          <div className="flex items-center space-x-3">
-            <button
-              onClick={() => handleCounterAdjust((service?.activeCounters || 1) - 1)}
-              className="w-8 h-8 rounded bg-slate-700 hover:bg-slate-600 flex items-center justify-center font-bold text-slate-200"
-            >
-              -
-            </button>
-            <span className="font-bold text-lg w-8 text-center">{service?.activeCounters ?? 1}</span>
-            <button
-              onClick={() => handleCounterAdjust((service?.activeCounters || 1) + 1)}
-              className="w-8 h-8 rounded bg-slate-700 hover:bg-slate-600 flex items-center justify-center font-bold text-slate-200"
-            >
-              +
-            </button>
-          </div>
-        </div>
+        )}
       </div>
     </div>
   );
 };
 
-// Explicit default export guarantees compatibility with Dashboard.jsx
 export default WorkerDashboard;

@@ -1,10 +1,16 @@
 const express = require('express');
+const http = require('http');
 const mongoose = require('mongoose');
 const cors = require('cors');
 const { clerkMiddleware } = require('@clerk/express');
+const { initSocket } = require('./socket');
 require('dotenv').config();
 
 const app = express();
+const httpServer = http.createServer(app);
+
+// Initialize Socket.io on the shared HTTP server
+const io = initSocket(httpServer);
 
 // Core Middleware
 app.use(cors());
@@ -47,9 +53,12 @@ mongoose.connect(MONGO_URI)
 // Routes Configuration
 const queueRoutes = require('./routes/queueRoutes');
 const workerRoutes = require('./routes/workerRoutes');
+const organizationRoutes = require('./routes/organizationRoutes');
 
 app.use('/api', queueRoutes);
 app.use('/api', workerRoutes);
+app.use('/api/v1/orgs', organizationRoutes);
+app.use('/api/orgs', organizationRoutes);
 
 if (require('fs').existsSync('./routes/adminRoutes.js')) {
   app.use('/api/admin', require('./routes/adminRoutes'));
@@ -61,6 +70,10 @@ app.use((req, res) => {
 });
 
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+if (require.main === module) {
+  httpServer.listen(PORT, () => {
+    console.log(`Server running on port ${PORT} (HTTP + WebSocket)`);
+  });
+}
+
+module.exports = { app, httpServer, io };

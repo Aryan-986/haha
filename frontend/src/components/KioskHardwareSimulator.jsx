@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 
-const API_BASE = 'http://localhost:5000/api';
+const API_BASE = 'http://localhost:5000/api/v1';
 
-const KioskHardwareSimulator = ({ serviceId, onDispense }) => {
+const KioskHardwareSimulator = ({ orgId, deptId, onDispense }) => {
   const [loading, setLoading] = useState(false);
   const [isAutoLoop, setIsAutoLoop] = useState(false);
   const [intervalMinutes, setIntervalMinutes] = useState(1);
@@ -13,17 +13,28 @@ const KioskHardwareSimulator = ({ serviceId, onDispense }) => {
   // Store interval ID in a ref so it persists across renders
   const loopRef = useRef(null);
 
-  // Function to dispense a single token
+  // Function to dispense a single token for selected Org & Dept
   const dispenseToken = async () => {
+    if (!orgId || !deptId) {
+      setError('Select an Organization and Department first.');
+      return;
+    }
+
     setLoading(true);
     try {
-      const res = await axios.post(`${API_BASE}/kiosk/dispense-token`, { serviceId });
-      setLastDispensedTicket(res.data?.ticket?.ticketNumber || 'Dispensed');
+      const res = await axios.post(`${API_BASE}/tokens/dispense`, {
+        orgId,
+        deptId,
+        source: 'KIOSK_HARDWARE_SIMULATOR'
+      });
+
+      const ticketNum = res.data?.ticketNumber || res.data?.ticket?.ticketNumber || 'Dispensed';
+      setLastDispensedTicket(ticketNum);
       setError(null);
       if (onDispense) onDispense();
     } catch (err) {
       console.error('Kiosk simulation error:', err);
-      setError('Failed to dispense token from hardware');
+      setError('Failed to dispense token from hardware simulator');
     } finally {
       setLoading(false);
     }
@@ -50,7 +61,7 @@ const KioskHardwareSimulator = ({ serviceId, onDispense }) => {
     }
   };
 
-  // Cleanup interval if component unmounts
+  // Cleanup interval on unmount or when orgId / deptId changes while active
   useEffect(() => {
     return () => {
       if (loopRef.current) clearInterval(loopRef.current);
@@ -58,14 +69,14 @@ const KioskHardwareSimulator = ({ serviceId, onDispense }) => {
   }, []);
 
   return (
-    <div className="bg-slate-800 p-5 rounded-xl border border-indigo-500/30 shadow-lg space-y-4">
+    <div className="bg-slate-800 p-5 rounded-xl border border-indigo-500/30 shadow-lg space-y-4 text-slate-100">
       <div className="flex items-center justify-between border-b border-slate-700 pb-3">
         <div className="flex items-center space-x-2">
           <span className="relative flex h-3 w-3">
             <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${isAutoLoop ? 'bg-emerald-400' : 'bg-indigo-400'}`}></span>
             <span className={`relative inline-flex rounded-full h-3 w-3 ${isAutoLoop ? 'bg-emerald-500' : 'bg-indigo-500'}`}></span>
           </span>
-          <h3 className="text-sm font-semibold text-slate-200 tracking-wide uppercase">
+          <h3 className="text-sm font-semibold tracking-wide uppercase text-slate-200">
             Physical Thermal Printer Simulator
           </h3>
         </div>
@@ -89,7 +100,7 @@ const KioskHardwareSimulator = ({ serviceId, onDispense }) => {
           <button
             onClick={dispenseToken}
             disabled={loading}
-            className="flex-1 py-2 px-3 bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-700 text-white font-medium text-xs rounded transition duration-150"
+            className="flex-1 py-2 px-3 bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-700 text-white font-medium text-xs rounded transition duration-150 active:scale-95"
           >
             {loading ? 'Dispensing...' : '🔘 Single Press (1 Token)'}
           </button>
@@ -97,11 +108,10 @@ const KioskHardwareSimulator = ({ serviceId, onDispense }) => {
           {/* Auto Loop Toggle Button */}
           <button
             onClick={toggleAutoLoop}
-            className={`flex-1 py-2 px-3 font-semibold text-xs rounded transition duration-150 shadow-md ${
-              isAutoLoop
-                ? 'bg-rose-600 hover:bg-rose-500 text-white border border-rose-400'
-                : 'bg-emerald-600 hover:bg-emerald-500 text-white'
-            }`}
+            className={`flex-1 py-2 px-3 font-semibold text-xs rounded transition duration-150 shadow-md active:scale-95 ${isAutoLoop
+              ? 'bg-rose-600 hover:bg-rose-500 text-white border border-rose-400'
+              : 'bg-emerald-600 hover:bg-emerald-500 text-white'
+              }`}
           >
             {isAutoLoop ? '⏹ Stop Auto Dispenser' : '▶ Start Auto Dispenser'}
           </button>
@@ -109,7 +119,9 @@ const KioskHardwareSimulator = ({ serviceId, onDispense }) => {
 
         {/* Interval Settings */}
         <div className="flex items-center justify-between bg-slate-900/60 p-2.5 rounded border border-slate-700/50 text-xs text-slate-300">
-          <label htmlFor="interval-input" className="font-medium">Dispense Interval (Minutes):</label>
+          <label htmlFor="interval-input" className="font-medium">
+            Dispense Interval (Minutes):
+          </label>
           <input
             id="interval-input"
             type="number"

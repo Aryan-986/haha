@@ -3,6 +3,8 @@ const router = express.Router();
 const mongoose = require('mongoose');
 const Service = require('../models/Service');
 const Ticket = require('../models/Ticket');
+const Department = require('../models/Department');
+const Organization = require('../models/Organization');
 
 // Helper function to validate MongoDB ObjectIds
 const isValidObjectId = (id) => mongoose.Types.ObjectId.isValid(id);
@@ -172,5 +174,81 @@ router.post('/kiosk/dispense-token', async (req, res) => {
     res.status(500).json({ error: 'Failed to dispense token', details: err.message });
   }
 });
+
+// POST /api/v1/tokens/transfer & POST /api/tokens/transfer
+// Transfer ticket to target department, update history, and set status to 'TRANSFERRED'
+const transferTokenHandler = async (req, res) => {
+  try {
+    const { ticketId, targetDeptId, workerId } = req.body;
+
+    if (!ticketId || !isValidObjectId(ticketId)) {
+      return res.status(400).json({ error: 'Valid ticketId is required' });
+    }
+
+    if (!targetDeptId || !isValidObjectId(targetDeptId)) {
+      return res.status(400).json({ error: 'Valid targetDeptId is required' });
+    }
+
+    const ticket = await Ticket.findById(ticketId);
+    if (!ticket) {
+      return res.status(404).json({ error: 'Ticket not found' });
+    }
+
+    if (ticket.status === 'COMPLETED' || ticket.status === 'CANCELLED') {
+      return res.status(400).json({ error: `Cannot transfer a ticket that is already ${ticket.status}` });
+    }
+
+    const targetDept = await Department.findById(targetDeptId);
+    if (!targetDept) {
+      return res.status(404).json({ error: 'Target department not found' });
+    }
+
+    // Tenant boundary check if ticket has orgId
+    if (ticket.orgId && targetDept.orgId && ticket.orgId.toString() !== targetDept.orgId.toString()) {
+      return res.status(400).json({ error: 'Cannot transfer ticket across different organizations' });
+    }
+
+    // Push new transition to history
+    ticket.history.push({
+      deptId: targetDept._id,
+      timestamp: new Date(),
+      servedBy: workerId || 'Staff Transfer'
+    });
+
+    // Update current department and status
+    ticket.currentDeptId = targetDept._id;
+    ticket.status = 'TRANSFERRED';
+
+    // Calculate queue position in the new department
+    const pendingInTarget = await Ticket.countDocuments({
+      currentDeptId: targetDept._id,
+      status: { $in: ['WAITING', 'TRANSFERRED'] }
+    });
+    ticket.positionInQueue = pendingInTarget + 1;
+
+    await ticket.save();
+
+    const activeCounters = (targetDept.subCounters && targetDept.subCounters.length > 0)
+      ? targetDept.subCounters.length
+      : 1;
+    const avgTime = targetDept.avgServiceTimeMins || 5;
+    const estimatedWaitMin = Math.ceil((pendingInTarget * avgTime) / activeCounters);
+
+    res.json({
+      success: true,
+      message: `Ticket ${ticket.ticketNumber} transferred to ${targetDept.name} successfully`,
+      ticket,
+      targetDepartment: targetDept,
+      positionInQueue: ticket.positionInQueue,
+      estimatedWaitMin
+    });
+  } catch (err) {
+    console.error('SERVER ERROR in /tokens/transfer:', err);
+    res.status(500).json({ error: 'Failed to transfer ticket', details: err.message });
+  }
+};
+
+router.post('/v1/tokens/transfer', transferTokenHandler);
+router.post('/tokens/transfer', transferTokenHandler);
 
 module.exports = router;
