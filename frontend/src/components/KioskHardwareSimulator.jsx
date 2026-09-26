@@ -109,8 +109,8 @@ const KioskHardwareSimulator = ({ orgId, deptId, onDispense }) => {
           <button
             onClick={toggleAutoLoop}
             className={`flex-1 py-2 px-3 font-semibold text-xs rounded transition duration-150 shadow-md active:scale-95 ${isAutoLoop
-              ? 'bg-rose-600 hover:bg-rose-500 text-white border border-rose-400'
-              : 'bg-emerald-600 hover:bg-emerald-500 text-white'
+                ? 'bg-rose-600 hover:bg-rose-500 text-white border border-rose-400'
+                : 'bg-emerald-600 hover:bg-emerald-500 text-white'
               }`}
           >
             {isAutoLoop ? '⏹ Stop Auto Dispenser' : '▶ Start Auto Dispenser'}
