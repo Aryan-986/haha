@@ -19,7 +19,8 @@ import {
   ArrowRight,
   RefreshCw,
   Sparkles,
-  Tag
+  Tag,
+  DoorOpen
 } from 'lucide-react';
 import {
   getOrganizations,
@@ -53,7 +54,8 @@ export default function MasterAdminDashboard() {
     prefix: '',
     avgServiceTimeMins: 5,
     subCountersInput: '',
-    isEntryLevel: false
+    isEntryLevel: false,
+    roomNumber: ''
   });
 
   const [formSubmitting, setFormSubmitting] = useState(false);
@@ -170,7 +172,8 @@ export default function MasterAdminDashboard() {
       prefix: '',
       avgServiceTimeMins: 5,
       subCountersInput: 'Desk 1, Desk 2',
-      isEntryLevel: existingDepts.length === 0
+      isEntryLevel: existingDepts.length === 0,
+      roomNumber: ''
     });
     setIsDeptModalOpen(true);
   };
@@ -194,7 +197,8 @@ export default function MasterAdminDashboard() {
         prefix: deptForm.prefix.trim().toUpperCase(),
         avgServiceTimeMins: Number(deptForm.avgServiceTimeMins) || 5,
         subCounters,
-        isEntryLevel: Boolean(deptForm.isEntryLevel)
+        isEntryLevel: Boolean(deptForm.isEntryLevel),
+        roomNumber: deptForm.roomNumber ? deptForm.roomNumber.trim() : ''
       };
 
       const res = await createDepartment(targetOrgForDept._id, deptPayload);
@@ -520,6 +524,12 @@ export default function MasterAdminDashboard() {
                                         <Clock className="w-3.5 h-3.5 text-slate-500" />
                                         Avg Service: {entryDept.avgServiceTimeMins || 5} mins
                                       </span>
+                                      {entryDept.roomNumber && (
+                                        <span className="flex items-center gap-1">
+                                          <DoorOpen className="w-3.5 h-3.5 text-cyan-400" />
+                                          Room {entryDept.roomNumber}
+                                        </span>
+                                      )}
                                     </div>
                                   </div>
 
@@ -576,10 +586,18 @@ export default function MasterAdminDashboard() {
                                         <h5 className="text-xs font-bold text-white">{dept.name}</h5>
                                       </div>
 
-                                      <span className="flex items-center gap-1 text-[11px] text-slate-400">
-                                        <Clock className="w-3 h-3 text-slate-500" />
-                                        {dept.avgServiceTimeMins || 5}m
-                                      </span>
+                                      <div className="flex items-center gap-2">
+                                        <span className="flex items-center gap-1 text-[11px] text-slate-400">
+                                          <Clock className="w-3 h-3 text-slate-500" />
+                                          {dept.avgServiceTimeMins || 5}m
+                                        </span>
+                                        {dept.roomNumber && (
+                                          <span className="flex items-center gap-1 text-[11px] text-cyan-400">
+                                            <DoorOpen className="w-3 h-3" />
+                                            Room {dept.roomNumber}
+                                          </span>
+                                        )}
+                                      </div>
                                     </div>
 
                                     {/* Sub-counters */}
@@ -823,6 +841,25 @@ export default function MasterAdminDashboard() {
                       ))}
                   </div>
                 )}
+              </div>
+
+              {/* Room Number / Room ID */}
+              <div>
+                <label className="text-xs font-semibold text-slate-300 mb-1.5 block">
+                  Room Number / Room ID (optional)
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. 105, A-3, Room B"
+                  value={deptForm.roomNumber}
+                  onChange={(e) =>
+                    setDeptForm({ ...deptForm, roomNumber: e.target.value })
+                  }
+                  className="w-full bg-slate-950 border border-slate-800 text-white rounded-xl px-4 py-2.5 text-xs focus:outline-none focus:border-indigo-500"
+                />
+                <p className="text-[10px] text-slate-500 mt-1">
+                  Assign a physical room/counter to this department. Tokens will be queued by room independently.
+                </p>
               </div>
 
               {/* Is Entry Level Checkbox */}

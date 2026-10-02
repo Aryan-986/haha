@@ -62,7 +62,7 @@ router.get('/', async (req, res) => {
 router.post('/:orgId/departments', async (req, res) => {
   try {
     const { orgId } = req.params;
-    const { name, prefix, avgServiceTimeMins, subCounters, isEntryLevel } = req.body;
+    const { name, prefix, avgServiceTimeMins, subCounters, isEntryLevel, roomNumber } = req.body;
 
     if (!isValidObjectId(orgId)) {
       return res.status(400).json({ error: 'Invalid Organization ID format' });
@@ -87,7 +87,8 @@ router.post('/:orgId/departments', async (req, res) => {
       prefix: prefix.trim().toUpperCase(),
       avgServiceTimeMins: Number(avgServiceTimeMins) || 5,
       subCounters: Array.isArray(subCounters) ? subCounters : [],
-      isEntryLevel: Boolean(isEntryLevel)
+      isEntryLevel: Boolean(isEntryLevel),
+      roomNumber: roomNumber ? String(roomNumber).trim() : ''
     });
 
     res.status(201).json({

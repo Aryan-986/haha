@@ -18,6 +18,12 @@ const departmentSchema = new mongoose.Schema({
     uppercase: true,
     trim: true
   },
+  roomNumber: {
+    type: String,
+    trim: true,
+    default: '',
+    index: true
+  },
   avgServiceTimeMins: {
     type: Number,
     default: 5,

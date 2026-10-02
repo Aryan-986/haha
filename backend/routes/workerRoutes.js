@@ -1,254 +1,414 @@
+/**
+ * workerRoutes.js
+ * Worker portal routes backed by QueueService & WorkerService — Phase 2
+ * Fully operational lifecycle: call → start → complete + break + recall + snooze + transfer + skip + no-show
+ */
+
 const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
 const Service = require('../models/Service');
 const Ticket = require('../models/Ticket');
 const Department = require('../models/Department');
-const Organization = require('../models/Organization');
+const Counter = require('../models/Counter');
+const Worker = require('../models/Worker');
+const queueService = require('../services/queueService');
+const workerService = require('../services/workerService');
 
-// Helper function to validate MongoDB ObjectIds
 const isValidObjectId = (id) => mongoose.Types.ObjectId.isValid(id);
 
-// GET /api/services (Used by TicketTracker to poll live data)
-router.get('/services', async (req, res) => {
+// -------------------------------------------------------------------
+// WORKER IDENTITY & PROFILE
+// -------------------------------------------------------------------
+
+// GET /api/v1/worker/me - Get worker profile from authUserId (or fallback)
+router.get('/me', async (req, res) => {
   try {
-    const services = await Service.find();
-    res.json(services);
+    const authUserId = req.auth?.userId || req.query.authUserId;
+    const { orgId } = req.query;
+
+    let worker = null;
+
+    if (authUserId) {
+      const profile = await workerService.getWorkerProfile(authUserId);
+      if (profile?.worker) {
+        return res.json({ success: true, ...profile });
+      }
+    }
+
+    // Fallback: find by orgId (dev mode)
+    if (orgId && isValidObjectId(orgId)) {
+      worker = await Worker.findOne({ organizationId: orgId })
+        .populate('organizationId', 'name type')
+        .populate('departmentId', 'name prefix roomNumber avgServiceTimeMins')
+        .populate('counterId', 'name counterNumber status currentTicketId isActive');
+    }
+
+    if (!worker) {
+      return res.status(404).json({ success: false, error: 'Worker profile not found' });
+    }
+
+    let currentTicket = null;
+    if (worker.counterId?.currentTicketId) {
+      currentTicket = await Ticket.findById(worker.counterId.currentTicketId)
+        .populate('currentDepartmentId', 'name prefix');
+    }
+
+    res.json({ success: true, worker, currentTicket });
   } catch (err) {
-    console.error('SERVER ERROR in GET /services:', err);
-    res.status(500).json({ error: 'Failed to fetch services', details: err.message });
+    console.error('Error in GET /worker/me:', err);
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// POST /api/worker/service/:id/call-next
-router.post('/worker/service/:id/call-next', async (req, res) => {
+// GET /api/v1/worker/identity - Legacy compat (dev only)
+router.get('/identity', async (req, res) => {
+  try {
+    const { orgId, authUserId, name } = req.query;
+    if (!orgId || !isValidObjectId(orgId)) {
+      return res.status(400).json({ error: 'Valid orgId is required' });
+    }
+
+    let worker = null;
+    if (authUserId) {
+      worker = await Worker.findOne({ organizationId: orgId, authUserId });
+    }
+    if (!worker) {
+      worker = await Worker.findOne({ organizationId: orgId });
+    }
+    if (!worker) {
+      worker = await Worker.create({
+        organizationId: orgId,
+        name: name || 'Desk Worker',
+        role: 'WORKER'
+      });
+    }
+
+    res.json(worker);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/v1/worker/workers?orgId=&deptId= - List workers
+router.get('/workers', async (req, res) => {
+  try {
+    const { orgId, deptId } = req.query;
+    const workers = await workerService.listWorkers({
+      organizationId: orgId && isValidObjectId(orgId) ? orgId : null,
+      departmentId: deptId && isValidObjectId(deptId) ? deptId : null
+    });
+    res.json({ success: true, workers });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// PATCH /api/v1/worker/workers/:id - Update worker
+router.patch('/workers/:id', async (req, res) => {
   try {
     const { id } = req.params;
+    const { organizationId, name, role, departmentId, counterId } = req.body;
+    const updates = {};
+    if (name) updates.name = name;
+    if (role) updates.role = role;
+    if (departmentId && isValidObjectId(departmentId)) updates.departmentId = departmentId;
+    if (counterId !== undefined) updates.counterId = isValidObjectId(counterId) ? counterId : null;
 
-    if (!isValidObjectId(id)) {
-      return res.status(400).json({ error: 'Invalid Service ID format' });
+    const filter = { _id: id };
+    if (organizationId) filter.organizationId = organizationId;
+
+    const worker = await Worker.findOneAndUpdate(filter, updates, { returnDocument: 'after' })
+      .populate('departmentId', 'name prefix')
+      .populate('counterId', 'name counterNumber status');
+    if (!worker) return res.status(404).json({ success: false, error: 'Worker not found' });
+    res.json({ success: true, worker });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/v1/worker/workers - Create worker
+router.post('/workers', async (req, res) => {
+  try {
+    const { organizationId, departmentId, name, role, authUserId } = req.body;
+    if (!organizationId || !name) {
+      return res.status(400).json({ success: false, error: 'organizationId and name are required' });
+    }
+    const worker = await Worker.create({
+      organizationId,
+      departmentId: departmentId && isValidObjectId(departmentId) ? departmentId : null,
+      name,
+      role: role || 'WORKER',
+      authUserId: authUserId || null
+    });
+    res.status(201).json({ success: true, worker });
+  } catch (err) {
+    console.error('Error creating worker:', err);
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// -------------------------------------------------------------------
+// WORKER BREAK SYSTEM
+// -------------------------------------------------------------------
+
+// POST /api/v1/worker/break - Worker starts break
+router.post('/break', async (req, res) => {
+  try {
+    const { workerId, organizationId } = req.body;
+    if (!workerId || !isValidObjectId(workerId)) {
+      return res.status(400).json({ success: false, error: 'Valid workerId is required' });
+    }
+    const worker = await workerService.startWorkerBreak({ workerId, organizationId });
+    res.json({ success: true, message: 'Break started', worker });
+  } catch (err) {
+    res.status(err.status || 400).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/v1/worker/break-end - Worker ends break
+router.post('/break-end', async (req, res) => {
+  try {
+    const { workerId, organizationId } = req.body;
+    if (!workerId || !isValidObjectId(workerId)) {
+      return res.status(400).json({ success: false, error: 'Valid workerId is required' });
+    }
+    const worker = await workerService.endWorkerBreak({ workerId, organizationId });
+    res.json({ success: true, message: 'Break ended, back to AVAILABLE', worker });
+  } catch (err) {
+    res.status(err.status || 400).json({ success: false, error: err.message });
+  }
+});
+
+// -------------------------------------------------------------------
+// QUEUE OPERATIONS
+// -------------------------------------------------------------------
+
+// POST /api/v1/worker/department/:departmentId/call-next
+router.post('/department/:departmentId/call-next', async (req, res) => {
+  try {
+    const { departmentId } = req.params;
+    const { orgId, counterId, workerId, roomId } = req.body;
+
+    if (!isValidObjectId(departmentId)) {
+      return res.status(400).json({ error: 'Invalid Department ID format' });
     }
 
-    // Fetch existing service to evaluate current bounds
-    const existingService = await Service.findById(id);
-    if (!existingService) {
-      return res.status(404).json({ error: 'Service not found' });
+    // Verify worker isn't on break
+    if (workerId && isValidObjectId(workerId)) {
+      const w = await Worker.findById(workerId);
+      if (w && w.status === 'ON_BREAK') {
+        return res.status(400).json({ error: 'Cannot call next while on break' });
+      }
     }
 
-    const nextServingNumber = (existingService.currentlyServingNumber || 100) + 1;
-    const nextQueueCount = Math.max(0, existingService.currentQueueCount - 1);
+    const result = await queueService.callNextTicket({
+      organizationId: orgId,
+      departmentId,
+      counterId,
+      workerId,
+      roomId: roomId || req.query.roomId
+    });
 
-    const updatedService = await Service.findByIdAndUpdate(
-      id,
-      {
-        $set: {
-          currentlyServingNumber: nextServingNumber,
-          currentQueueCount: nextQueueCount
-        }
-      },
-      { new: true, runValidators: false }
-    );
-
-    const ticketNumber = `A-${updatedService.currentlyServingNumber}`;
-
-    res.json({
-      message: 'Next ticket called successfully',
-      ticketNumber,
-      currentlyServingNumber: updatedService.currentlyServingNumber,
-      currentQueueCount: updatedService.currentQueueCount,
-      activeCounters: updatedService.activeCounters || 26
+    return res.json({
+      success: true,
+      ticket: result.ticket,
+      ticketNumber: result.ticketNumber,
+      counterNumber: result.counterNumber,
+      roomNumber: result.roomNumber,
+      message: result.message || (result.ticket ? 'Ticket called successfully' : 'No waiting tickets in this queue')
     });
   } catch (err) {
-    console.error('SERVER ERROR in /worker/service/:id/call-next:', err);
+    console.error('ERROR in /department/:departmentId/call-next:', err);
     res.status(500).json({ error: 'Failed to call next ticket', details: err.message });
   }
 });
 
-// PATCH /api/worker/service/:id/queue
-router.patch('/worker/service/:id/queue', async (req, res) => {
+// GET /api/v1/worker/department/:departmentId/current
+router.get('/department/:departmentId/current', async (req, res) => {
   try {
-    const { id } = req.params;
-    const { action } = req.body;
+    const { departmentId } = req.params;
+    const { roomId } = req.query;
 
-    if (!isValidObjectId(id)) {
-      return res.status(400).json({ error: 'Invalid Service ID format' });
+    if (!isValidObjectId(departmentId)) {
+      return res.status(400).json({ error: 'Invalid Department ID format' });
     }
 
-    const existingService = await Service.findById(id);
-    if (!existingService) {
-      return res.status(404).json({ error: 'Service not found' });
-    }
+    const dept = await Department.findById(departmentId);
+    if (!dept) return res.status(404).json({ error: 'Department not found' });
 
-    let updateQuery = {};
+    const servingFilter = {
+      currentDepartmentId: departmentId,
+      status: { $in: ['SERVING', 'CALLED'] }
+    };
+    if (roomId && isValidObjectId(roomId)) servingFilter.targetRoomId = roomId;
 
-    if (action === 'INCREMENT') {
-      updateQuery = { $inc: { currentQueueCount: 1 } };
-    } else if (action === 'DECREMENT') {
-      const nextQueueCount = Math.max(0, existingService.currentQueueCount - 1);
-      const nextServingNumber = (existingService.currentlyServingNumber || 100) + 1;
-      
-      updateQuery = {
-        $set: {
-          currentQueueCount: nextQueueCount,
-          currentlyServingNumber: nextServingNumber
-        }
-      };
-    } else {
-      return res.status(400).json({ error: 'Invalid queue adjustment action' });
-    }
+    const servingTicket = await Ticket.findOne(servingFilter).sort({ calledAt: -1 });
 
-    const updatedService = await Service.findByIdAndUpdate(
-      id,
-      updateQuery,
-      { new: true, runValidators: false }
-    );
+    const waitingFilter = {
+      currentDepartmentId: departmentId,
+      $or: [
+        { status: { $in: ['WAITING', 'TRANSFERRED'] } },
+        { status: 'SNOOZED', 'snoozeInfo.resumeAt': { $lte: new Date() } }
+      ]
+    };
 
-    res.json(updatedService);
-  } catch (err) {
-    console.error('SERVER ERROR in /queue:', err);
-    res.status(500).json({ error: 'Failed to adjust queue', details: err.message });
-  }
-});
+    const waitingTickets = await Ticket.find(waitingFilter)
+      .sort({ priority: -1, createdAt: 1 })
+      .limit(10);
 
-// PATCH /api/worker/service/:id/counters
-router.patch('/worker/service/:id/counters', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { activeCounters } = req.body;
+    const waitingCount = await Ticket.countDocuments(waitingFilter);
 
-    if (!isValidObjectId(id)) {
-      return res.status(400).json({ error: 'Invalid Service ID format' });
-    }
-
-    const updatedService = await Service.findByIdAndUpdate(
-      id,
-      { $set: { activeCounters: Math.max(1, Number(activeCounters) || 1) } },
-      { new: true, runValidators: false }
-    );
-
-    if (!updatedService) {
-      return res.status(404).json({ error: 'Service not found' });
-    }
-
-    res.json(updatedService);
-  } catch (err) {
-    console.error('SERVER ERROR in /counters:', err);
-    res.status(500).json({ error: 'Failed to update active counters', details: err.message });
-  }
-});
-
-// POST /api/kiosk/dispense-token
-router.post('/kiosk/dispense-token', async (req, res) => {
-  try {
-    const { serviceId } = req.body;
-
-    let targetId = serviceId;
-
-    if (!targetId) {
-      const defaultService = await Service.findOne();
-      if (!defaultService) {
-        return res.status(404).json({ error: 'Service not found for dispensing token' });
-      }
-      targetId = defaultService._id;
-    } else if (!isValidObjectId(targetId)) {
-      return res.status(400).json({ error: 'Invalid Service ID format' });
-    }
-
-    const updatedService = await Service.findByIdAndUpdate(
-      targetId,
-      { $inc: { currentQueueCount: 1 } },
-      { new: true, runValidators: false }
-    );
-
-    if (!updatedService) {
-      return res.status(404).json({ error: 'Service not found for dispensing token' });
-    }
-
-    res.json({
-      message: 'Token Dispensed Successfully',
-      ticket: { ticketNumber: `A-${100 + updatedService.currentQueueCount}` },
-      currentQueueCount: updatedService.currentQueueCount
+    return res.json({
+      success: true,
+      department: dept,
+      ticket: servingTicket || null,
+      ticketNumber: servingTicket ? servingTicket.ticketNumber : null,
+      waitingCount,
+      waitingTickets,
+      roomNumber: dept.roomNumber || ''
     });
   } catch (err) {
-    console.error('SERVER ERROR in /kiosk/dispense-token:', err);
-    res.status(500).json({ error: 'Failed to dispense token', details: err.message });
+    console.error('ERROR in /department/:departmentId/current:', err);
+    res.status(500).json({ error: 'Failed to fetch current serving ticket', details: err.message });
   }
 });
 
-// POST /api/v1/tokens/transfer & POST /api/tokens/transfer
-// Transfer ticket to target department, update history, and set status to 'TRANSFERRED'
-const transferTokenHandler = async (req, res) => {
+// POST /api/v1/worker/tokens/transfer
+router.post('/tokens/transfer', async (req, res) => {
   try {
-    const { ticketId, targetDeptId, workerId } = req.body;
-
-    if (!ticketId || !isValidObjectId(ticketId)) {
-      return res.status(400).json({ error: 'Valid ticketId is required' });
-    }
+    const { ticketId, ticketNumber, targetDeptId, workerId, counterId } = req.body;
 
     if (!targetDeptId || !isValidObjectId(targetDeptId)) {
       return res.status(400).json({ error: 'Valid targetDeptId is required' });
     }
 
-    const ticket = await Ticket.findById(ticketId);
-    if (!ticket) {
-      return res.status(404).json({ error: 'Ticket not found' });
+    let resolvedTicketId = ticketId;
+    if (!resolvedTicketId && ticketNumber) {
+      const found = await Ticket.findOne({
+        ticketNumber: String(ticketNumber).trim(),
+        status: { $ne: 'COMPLETED' }
+      }).sort({ createdAt: -1 });
+      if (found) resolvedTicketId = found._id;
     }
 
-    if (ticket.status === 'COMPLETED' || ticket.status === 'CANCELLED') {
-      return res.status(400).json({ error: `Cannot transfer a ticket that is already ${ticket.status}` });
+    if (!resolvedTicketId || !isValidObjectId(resolvedTicketId)) {
+      return res.status(400).json({ error: 'Could not resolve ticket for transfer' });
     }
 
-    const targetDept = await Department.findById(targetDeptId);
-    if (!targetDept) {
-      return res.status(404).json({ error: 'Target department not found' });
-    }
-
-    // Tenant boundary check if ticket has orgId
-    if (ticket.orgId && targetDept.orgId && ticket.orgId.toString() !== targetDept.orgId.toString()) {
-      return res.status(400).json({ error: 'Cannot transfer ticket across different organizations' });
-    }
-
-    // Push new transition to history
-    ticket.history.push({
-      deptId: targetDept._id,
-      timestamp: new Date(),
-      servedBy: workerId || 'Staff Transfer'
+    const result = await queueService.transferTicket({
+      ticketId: resolvedTicketId,
+      targetDepartmentId: targetDeptId,
+      workerId,
+      counterId
     });
 
-    // Update current department and status
-    ticket.currentDeptId = targetDept._id;
-    ticket.status = 'TRANSFERRED';
+    const targetRoomStr = result.targetDepartment?.roomNumber ? ` [Room ${result.targetDepartment.roomNumber}]` : '';
 
-    // Calculate queue position in the new department
-    const pendingInTarget = await Ticket.countDocuments({
-      currentDeptId: targetDept._id,
-      status: { $in: ['WAITING', 'TRANSFERRED'] }
-    });
-    ticket.positionInQueue = pendingInTarget + 1;
-
-    await ticket.save();
-
-    const activeCounters = (targetDept.subCounters && targetDept.subCounters.length > 0)
-      ? targetDept.subCounters.length
-      : 1;
-    const avgTime = targetDept.avgServiceTimeMins || 5;
-    const estimatedWaitMin = Math.ceil((pendingInTarget * avgTime) / activeCounters);
-
-    res.json({
+    return res.json({
       success: true,
-      message: `Ticket ${ticket.ticketNumber} transferred to ${targetDept.name} successfully`,
-      ticket,
-      targetDepartment: targetDept,
-      positionInQueue: ticket.positionInQueue,
-      estimatedWaitMin
+      message: `Ticket ${result.ticket.ticketNumber} transferred to ${result.targetDepartment.name}${targetRoomStr}`,
+      ticket: result.ticket,
+      targetDepartment: result.targetDepartment,
+      positionInQueue: result.positionInQueue
     });
   } catch (err) {
-    console.error('SERVER ERROR in /tokens/transfer:', err);
-    res.status(500).json({ error: 'Failed to transfer ticket', details: err.message });
+    console.error('ERROR in /tokens/transfer:', err);
+    res.status(err.status || 500).json({ error: 'Failed to transfer ticket', details: err.message });
   }
-};
+});
 
-router.post('/v1/tokens/transfer', transferTokenHandler);
-router.post('/tokens/transfer', transferTokenHandler);
+// POST /api/v1/worker/tokens/start
+router.post('/tokens/start', async (req, res) => {
+  try {
+    const { ticketId, workerId, counterId } = req.body;
+    const ticket = await queueService.startService({ ticketId, workerId, counterId });
+    res.json({ success: true, message: 'Service started', ticket });
+  } catch (err) {
+    res.status(err.status || 400).json({ error: err.message });
+  }
+});
+
+// POST /api/v1/worker/tokens/complete
+router.post('/tokens/complete', async (req, res) => {
+  try {
+    const { ticketId, workerId, counterId } = req.body;
+    const ticket = await queueService.completeService({ ticketId, workerId, counterId });
+    res.json({ success: true, message: 'Service completed', ticket });
+  } catch (err) {
+    res.status(err.status || 400).json({ error: err.message });
+  }
+});
+
+// POST /api/v1/worker/tokens/snooze
+router.post('/tokens/snooze', async (req, res) => {
+  try {
+    const { ticketId, minutes, workerId } = req.body;
+    const ticket = await queueService.snoozeTicket({
+      ticketId,
+      minutes: Number(minutes) || 5,
+      workerId,
+      source: 'WORKER'
+    });
+    res.json({ success: true, message: `Ticket snoozed for ${minutes || 5} minutes`, ticket });
+  } catch (err) {
+    res.status(err.status || 400).json({ error: err.message });
+  }
+});
+
+// POST /api/v1/worker/tokens/resume
+router.post('/tokens/resume', async (req, res) => {
+  try {
+    const { ticketId, workerId } = req.body;
+    const ticket = await queueService.resumeTicket({ ticketId, workerId });
+    res.json({ success: true, message: 'Ticket resumed to WAITING', ticket });
+  } catch (err) {
+    res.status(err.status || 400).json({ error: err.message });
+  }
+});
+
+// POST /api/v1/worker/tokens/recall
+router.post('/tokens/recall', async (req, res) => {
+  try {
+    const { ticketId, workerId, counterId } = req.body;
+    const ticket = await queueService.recallTicket({ ticketId, workerId, counterId });
+    res.json({ success: true, message: 'Ticket recalled', ticket });
+  } catch (err) {
+    res.status(err.status || 400).json({ error: err.message });
+  }
+});
+
+// POST /api/v1/worker/tokens/skip
+router.post('/tokens/skip', async (req, res) => {
+  try {
+    const { ticketId, workerId, counterId } = req.body;
+    const ticket = await queueService.skipTicket({ ticketId, workerId, counterId });
+    res.json({ success: true, message: 'Ticket skipped', ticket });
+  } catch (err) {
+    res.status(err.status || 400).json({ error: err.message });
+  }
+});
+
+// POST /api/v1/worker/tokens/no-show
+router.post('/tokens/no-show', async (req, res) => {
+  try {
+    const { ticketId, workerId, counterId } = req.body;
+    const ticket = await queueService.noShowTicket({ ticketId, workerId, counterId });
+    res.json({ success: true, message: 'Ticket marked as no-show', ticket });
+  } catch (err) {
+    res.status(err.status || 400).json({ error: err.message });
+  }
+});
+
+// GET /api/v1/worker/services (Legacy fallback)
+router.get('/services', async (req, res) => {
+  try {
+    const services = await Service.find();
+    res.json(services);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch services', details: err.message });
+  }
+});
 
 module.exports = router;
