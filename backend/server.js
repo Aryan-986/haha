@@ -16,6 +16,12 @@ const io = initSocket(httpServer);
 app.use(cors());
 app.use(express.json());
 
+// Pass Socket.io instance to request context
+app.use((req, res, next) => {
+  req.io = io;
+  next();
+});
+
 // Attach Clerk Authentication Context
 if (process.env.CLERK_PUBLISHABLE_KEY && process.env.CLERK_SECRET_KEY) {
   app.use(clerkMiddleware());
@@ -50,15 +56,23 @@ mongoose.connect(MONGO_URI)
   })
   .catch((err) => console.error('MongoDB Connection Error:', err));
 
-// Routes Configuration
 const queueRoutes = require('./routes/queueRoutes');
 const workerRoutes = require('./routes/workerRoutes');
 const organizationRoutes = require('./routes/organizationRoutes');
+const ticketRoutes = require('./routes/ticketRoutes');
+const departmentRoutes = require('./routes/departmentRoutes');
+const counterRoutes = require('./routes/counterRoutes');
 
 app.use('/api', queueRoutes);
-app.use('/api', workerRoutes);
+app.use('/api/v1/worker', workerRoutes);
 app.use('/api/v1/orgs', organizationRoutes);
 app.use('/api/orgs', organizationRoutes);
+app.use('/api/v1/tickets', ticketRoutes);
+app.use('/api/tickets', ticketRoutes);
+app.use('/api/v1/departments', departmentRoutes);
+app.use('/api/departments', departmentRoutes);
+app.use('/api/v1/counters', counterRoutes);
+app.use('/api/counters', counterRoutes);
 
 if (require('fs').existsSync('./routes/adminRoutes.js')) {
   app.use('/api/admin', require('./routes/adminRoutes'));

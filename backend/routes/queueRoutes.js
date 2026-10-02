@@ -6,6 +6,8 @@ const QueueRecord = require('../models/QueueRecord');
 const Ticket = require('../models/Ticket');
 const Department = require('../models/Department');
 const Organization = require('../models/Organization');
+const queueService = require('../services/queueService');
+const { emitQueueEvent } = require('../socket');
 
 const isValidObjectId = (id) => mongoose.Types.ObjectId.isValid(id);
 
@@ -26,66 +28,39 @@ try {
 
 // =======================================================================
 // CALL NEXT TICKET HANDLER
-// Resolves:
-// - POST /api/queue/call-next
-// - POST /api/v1/queue/call-next
-// - POST /api/v1/tokens/call-next
-// - POST /api/services/:id/call-next
+// Canonical, atomic, and scoped to Department / Counter / Room
+// Never executes broad updateMany across whole department.
+// Never generates fake tickets in real queue flow.
 // =======================================================================
 const callNextHandler = async (req, res) => {
   try {
-    const { serviceId, orgId, deptId, departmentId, counterNumber } = req.body;
+    const { serviceId, orgId, deptId, departmentId, counterNumber, counterId, workerId, roomId } = req.body;
     const targetDeptId = deptId || departmentId;
-    const activeCounter = counterNumber || 1;
 
-    // 1. Check Department-based multi-tenant tickets first
+    // 1. Department-based queue operations (Primary / Source of Truth)
     if (targetDeptId && isValidObjectId(targetDeptId)) {
-      const pendingTicket = await Ticket.findOne({
-        currentDeptId: targetDeptId,
-        status: { $in: ['WAITING', 'TRANSFERRED'] }
-      }).sort({ createdAt: 1 });
-
-      if (pendingTicket) {
-        pendingTicket.status = 'SERVING';
-        pendingTicket.counterNumber = activeCounter;
-        pendingTicket.calledAt = new Date();
-        await pendingTicket.save();
-
-        return res.status(200).json({
-          success: true,
-          message: 'Next ticket called successfully',
-          ticketNumber: pendingTicket.ticketNumber,
-          ticket: pendingTicket,
-          counterNumber: activeCounter
-        });
-      }
-
-      // If no tickets in queue for this department, fall back to department prefix format
-      const dept = await Department.findById(targetDeptId);
-      const prefix = dept?.prefix ? dept.prefix.toUpperCase() : 'DOC';
-      const mockTicketNum = `${prefix}-${Math.floor(100 + Math.random() * 900)}`;
+      const result = await queueService.callNextTicket({
+        organizationId: orgId,
+        departmentId: targetDeptId,
+        counterId,
+        workerId,
+        roomId
+      });
 
       return res.status(200).json({
         success: true,
-        message: 'No pending DB tickets. Issued simulated ticket.',
-        ticketNumber: mockTicketNum,
-        ticket: {
-          ticketNumber: mockTicketNum,
-          status: 'SERVING',
-          counterNumber: activeCounter,
-          calledAt: new Date()
-        }
+        message: result.message || (result.ticket ? 'Next ticket called successfully' : 'No waiting tickets in this queue'),
+        ticketNumber: result.ticketNumber,
+        ticket: result.ticket,
+        counterNumber: result.counterNumber || counterNumber || 1,
+        roomNumber: result.roomNumber || ''
       });
     }
 
-    // 2. Check legacy Service model if serviceId is provided or passed in URL params
+    // 2. Legacy Service model fallback if serviceId is provided
     const targetServiceId = req.params.id || serviceId;
-    if (targetServiceId) {
-      let service = null;
-      if (isValidObjectId(targetServiceId)) {
-        service = await Service.findById(targetServiceId);
-      }
-
+    if (targetServiceId && isValidObjectId(targetServiceId)) {
+      const service = await Service.findById(targetServiceId);
       if (service) {
         service.currentlyServingNumber = (service.currentlyServingNumber || 100) + 1;
         if (service.currentQueueCount > 0) {
@@ -94,6 +69,18 @@ const callNextHandler = async (req, res) => {
         await service.save();
 
         const ticketNum = `A-${service.currentlyServingNumber}`;
+        const legacyPayload = {
+          ticketNumber: ticketNum,
+          ticket: {
+            ticketNumber: ticketNum,
+            status: 'SERVING',
+            counterNumber: counterNumber || 1,
+            calledAt: new Date()
+          },
+          event: 'CALL_NEXT_LEGACY'
+        };
+        emitQueueEvent('TOKEN_CALLED', legacyPayload);
+        emitQueueEvent('TOKEN_UPDATED', legacyPayload);
 
         return res.status(200).json({
           success: true,
@@ -105,47 +92,17 @@ const callNextHandler = async (req, res) => {
           ticket: {
             ticketNumber: ticketNum,
             status: 'SERVING',
-            counterNumber: activeCounter,
+            counterNumber: counterNumber || 1,
             calledAt: new Date()
           }
         });
       }
     }
 
-    // 3. Global fallback across any WAITING ticket
-    const globalTicket = await Ticket.findOne({
-      status: { $in: ['WAITING', 'TRANSFERRED'] }
-    }).sort({ createdAt: 1 });
-
-    if (globalTicket) {
-      globalTicket.status = 'SERVING';
-      globalTicket.counterNumber = activeCounter;
-      globalTicket.calledAt = new Date();
-      await globalTicket.save();
-
-      return res.status(200).json({
-        success: true,
-        message: 'Next ticket called successfully',
-        ticketNumber: globalTicket.ticketNumber,
-        ticket: globalTicket,
-        counterNumber: activeCounter
-      });
-    }
-
-    // 4. Default mock fallback ticket to ensure Worker Dashboard UI updates without crashing
-    const fallbackNum = `A-${Math.floor(100 + Math.random() * 900)}`;
-    return res.status(200).json({
-      success: true,
-      message: 'No tickets in queue. Generated fallback ticket.',
-      ticketNumber: fallbackNum,
-      ticket: {
-        ticketNumber: fallbackNum,
-        status: 'SERVING',
-        counterNumber: activeCounter,
-        calledAt: new Date()
-      }
+    return res.status(400).json({
+      success: false,
+      error: 'departmentId or serviceId is required to call next ticket'
     });
-
   } catch (err) {
     console.error('ERROR in callNextHandler:', err);
     return res.status(500).json({ error: 'Failed to call next ticket', details: err.message });
@@ -340,7 +297,7 @@ router.post('/admin/sim-update', async (req, res) => {
 // =======================================================================
 const issueTokenHandler = async (req, res) => {
   try {
-    const { orgId, deptId, departmentId, organizationId } = req.body;
+    const { orgId, deptId, departmentId, organizationId, roomId, roomNumber } = req.body;
     const targetOrgId = orgId || organizationId;
     const targetDeptId = deptId || departmentId;
 
@@ -375,6 +332,17 @@ const issueTokenHandler = async (req, res) => {
       }
     }
 
+    // Resolve roomNumber: use explicit param, or inherit from target department
+    const resolvedRoomNumber = roomNumber || targetDept.roomNumber || '';
+
+    // Resolve targetRoomId: use explicit roomId param, or if dept has a roomNumber, use dept._id as room ref
+    let resolvedRoomId = null;
+    if (roomId && isValidObjectId(roomId)) {
+      resolvedRoomId = roomId;
+    } else if (targetDept.roomNumber) {
+      resolvedRoomId = targetDept._id;
+    }
+
     const deptPrefix = (targetDept.prefix || 'T').toUpperCase();
     const count = await Ticket.countDocuments({ currentDeptId: targetDept._id });
     const ticketNumber = `${deptPrefix}-${String(count + 1).padStart(3, '0')}`;
@@ -389,6 +357,8 @@ const issueTokenHandler = async (req, res) => {
       ticketNumber,
       orgId: targetDept.orgId,
       currentDeptId: targetDept._id,
+      targetRoomId: resolvedRoomId,
+      roomNumber: resolvedRoomNumber,
       status: 'WAITING',
       positionInQueue,
       history: [
@@ -405,6 +375,16 @@ const issueTokenHandler = async (req, res) => {
       : 1;
     const avgServiceTime = targetDept.avgServiceTimeMins || 5;
     const estimatedWaitMin = Math.ceil((pendingCount * avgServiceTime) / activeCounters);
+
+    // Emit Socket.io event for token issued
+    emitQueueEvent('TOKEN_UPDATED', {
+      orgId: targetDept.orgId?.toString(),
+      deptId: targetDept._id.toString(),
+      ticket: newTicket,
+      ticketNumber: newTicket.ticketNumber,
+      roomNumber: resolvedRoomNumber,
+      event: 'ISSUE'
+    });
 
     res.status(201).json({
       success: true,
@@ -436,7 +416,8 @@ const trackTokenHandler = async (req, res) => {
 
     const ticket = await Ticket.findOne(query)
       .populate('orgId', 'name type address status')
-      .populate('currentDeptId', 'name prefix avgServiceTimeMins subCounters isEntryLevel')
+      .populate('currentDeptId', 'name prefix avgServiceTimeMins subCounters isEntryLevel roomNumber')
+      .populate('targetRoomId', 'name prefix roomNumber')
       .populate('history.deptId', 'name prefix');
 
     if (!ticket) {
@@ -471,6 +452,8 @@ const trackTokenHandler = async (req, res) => {
         positionInQueue: pendingAhead + 1,
         organization: ticket.orgId,
         currentDepartment: ticket.currentDeptId,
+        targetRoom: ticket.targetRoomId,
+        roomNumber: ticket.roomNumber,
         history: ticket.history,
         createdAt: ticket.createdAt,
         updatedAt: ticket.updatedAt
@@ -581,12 +564,14 @@ router.get('/queue/dept/:deptId', deptQueueHandler);
 // =======================================================================
 const dispenseTokenHandler = async (req, res) => {
   try {
-    const { orgId, deptId, source } = req.body;
+    const { orgId, deptId, source, priority, roomNumber } = req.body;
 
     let targetDept = null;
+    let targetOrgId = orgId;
 
     if (deptId && isValidObjectId(deptId)) {
       targetDept = await Department.findById(deptId);
+      if (targetDept) targetOrgId = targetDept.orgId;
     } else if (orgId && isValidObjectId(orgId)) {
       targetDept = await Department.findOne({ orgId, isEntryLevel: true });
       if (!targetDept) {
@@ -594,68 +579,61 @@ const dispenseTokenHandler = async (req, res) => {
       }
     }
 
-    if (!targetDept) {
-      const { serviceId } = req.body;
-      let targetServiceId = serviceId;
+    if (targetDept && targetOrgId) {
+      const result = await queueService.issueTicket({
+        organizationId: targetOrgId,
+        departmentId: targetDept._id,
+        priority: priority || 'NORMAL',
+        source: source || 'KIOSK',
+        roomNumber
+      });
 
-      if (!targetServiceId) {
-        const defaultService = await Service.findOne();
-        if (!defaultService) {
-          return res.status(404).json({ error: 'No service or department available for dispensing' });
-        }
-        targetServiceId = defaultService._id;
-      }
-
-      const updatedService = await Service.findByIdAndUpdate(
-        targetServiceId,
-        { $inc: { currentQueueCount: 1 } },
-        { new: true, runValidators: false }
-      );
-
-      if (!updatedService) {
-        return res.status(404).json({ error: 'Service not found' });
-      }
-
-      return res.json({
+      return res.status(201).json({
         success: true,
         source: source || 'KIOSK',
-        ticketNumber: `A-${100 + updatedService.currentQueueCount}`,
-        ticket: { ticketNumber: `A-${100 + updatedService.currentQueueCount}` },
-        currentQueueCount: updatedService.currentQueueCount
+        ticketNumber: result.ticketNumber,
+        ticket: result.ticket,
+        department: result.department,
+        positionInQueue: result.position,
+        estimatedWaitMin: result.estimatedWaitMin
       });
     }
 
-    const deptPrefix = (targetDept.prefix || 'T').toUpperCase();
-    const count = await Ticket.countDocuments({ currentDeptId: targetDept._id });
-    const ticketNumber = `${deptPrefix}-${String(count + 1).padStart(3, '0')}`;
+    // Fallback for legacy standalone Service if no org/dept exists
+    const { serviceId } = req.body;
+    let targetServiceId = serviceId;
 
-    const pendingCount = await Ticket.countDocuments({
-      currentDeptId: targetDept._id,
-      status: { $in: ['WAITING', 'TRANSFERRED'] }
+    if (!targetServiceId) {
+      const defaultService = await Service.findOne();
+      if (!defaultService) {
+        return res.status(404).json({ error: 'No service or department available for dispensing' });
+      }
+      targetServiceId = defaultService._id;
+    }
+
+    const updatedService = await Service.findByIdAndUpdate(
+      targetServiceId,
+      { $inc: { currentQueueCount: 1 } },
+      { new: true, runValidators: false }
+    );
+
+    if (!updatedService) {
+      return res.status(404).json({ error: 'Service not found' });
+    }
+
+    const ticketNum = `A-${100 + updatedService.currentQueueCount}`;
+    emitQueueEvent('TOKEN_UPDATED', {
+      ticketNumber: ticketNum,
+      ticket: { ticketNumber: ticketNum },
+      event: 'DISPENSE_LEGACY'
     });
-    const positionInQueue = pendingCount + 1;
 
-    const newTicket = await Ticket.create({
-      ticketNumber,
-      orgId: targetDept.orgId,
-      currentDeptId: targetDept._id,
-      status: 'WAITING',
-      positionInQueue,
-      history: [{ deptId: targetDept._id, timestamp: new Date(), servedBy: null }]
-    });
-
-    const activeCounters = (targetDept.subCounters && targetDept.subCounters.length > 0)
-      ? targetDept.subCounters.length : 1;
-    const estimatedWaitMin = Math.ceil((pendingCount * (targetDept.avgServiceTimeMins || 5)) / activeCounters);
-
-    res.status(201).json({
+    return res.json({
       success: true,
       source: source || 'KIOSK',
-      ticketNumber: newTicket.ticketNumber,
-      ticket: newTicket,
-      department: targetDept,
-      positionInQueue,
-      estimatedWaitMin
+      ticketNumber: ticketNum,
+      ticket: { ticketNumber: ticketNum },
+      currentQueueCount: updatedService.currentQueueCount
     });
   } catch (err) {
     console.error('ERROR in /tokens/dispense:', err);

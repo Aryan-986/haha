@@ -38,6 +38,14 @@ function initSocket(httpServer) {
       if (deptId) socket.leave(`dept:${deptId}`);
     });
 
+    // Dynamic room subscription switching — leave old rooms and join new ones
+    socket.on('switch_scope', ({ oldOrgId, oldDeptId, newOrgId, newDeptId }) => {
+      if (oldOrgId) socket.leave(`org:${oldOrgId}`);
+      if (oldDeptId) socket.leave(`dept:${oldDeptId}`);
+      if (newOrgId) socket.join(`org:${newOrgId}`);
+      if (newDeptId) socket.join(`dept:${newDeptId}`);
+    });
+
     socket.on('disconnect', () => {});
   });
 
@@ -48,7 +56,7 @@ function initSocket(httpServer) {
  * Emit a queue event to all clients watching a given org/dept.
  * Safe to call even before initSocket() — emits are silently skipped if io is null.
  *
- * @param {string} event  - Event name, e.g. 'queue_updated'
+ * @param {string} event  - Event name, e.g. 'queue_updated', 'TOKEN_CALLED', 'TOKEN_UPDATED'
  * @param {Object} payload - { orgId?, deptId?, event, ticket?, ... }
  */
 function emitQueueEvent(event, payload) {
@@ -57,8 +65,10 @@ function emitQueueEvent(event, payload) {
 
   // Broadcast to department room first (most specific), then org room
   if (deptId) io.to(`dept:${deptId}`).emit(event, payload);
-  else if (orgId) io.to(`org:${orgId}`).emit(event, payload);
-  else io.emit(event, payload); // Global broadcast as last resort
+  if (orgId) io.to(`org:${orgId}`).emit(event, payload);
+
+  // If neither is provided, global broadcast as last resort
+  if (!deptId && !orgId) io.emit(event, payload);
 }
 
 /**
