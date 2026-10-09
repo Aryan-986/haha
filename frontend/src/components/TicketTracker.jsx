@@ -7,8 +7,9 @@ import {
   Clock, Users, AlertCircle, CheckCircle2, Search, ArrowLeft, RefreshCw, 
   Sparkles, Bell, Trash2, Volume2, VolumeX, Plus, BellOff, Check, UserCheck, FastForward 
 } from 'lucide-react';
+import { getTicketDetails, trackTicketByToken } from '../services/citizenService';
 
-const API_BASE = 'http://localhost:5000/api';
+const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000/api';
 const LOCAL_STORAGE_KEY = 'queueless_active_token';
 const ALARMS_STORAGE_KEY = 'queueless_custom_alarms';
 
@@ -188,31 +189,39 @@ const TicketTracker = ({ onBack }) => {
   // Fetch queue data from backend API
   const fetchLiveData = useCallback(async (isMounted) => {
     try {
+      if (activeToken?._id || activeToken?.trackingToken || activeToken?.raw) {
+        const idOrNum = activeToken.trackingToken || activeToken._id || activeToken.raw;
+        let res = null;
+        if (idOrNum.length === 32) {
+          try {
+            res = await trackTicketByToken(idOrNum);
+          } catch {
+            res = await getTicketDetails(idOrNum);
+          }
+        } else {
+          res = await getTicketDetails(idOrNum);
+        }
+
+        if (isMounted && res && res.ticket) {
+          setActiveToken(prev => ({
+            ...prev,
+            ticket: res.ticket,
+            peopleAhead: res.peopleAhead,
+            position: res.position,
+            estimatedWaitMin: res.estimatedWaitMin,
+            status: res.ticket.status
+          }));
+        }
+      }
+
       const res = await axios.get(`${API_BASE}/services`);
       if (isMounted && res.data && res.data.length > 0) {
-        const raw = res.data[0];
-
-        const extractedServing = Number(
-          raw.currentlyServingNumber ?? raw.nowServing ?? raw.currentServing ?? 100
-        );
-        const extractedQueueCount = Number(
-          raw.currentQueueCount ?? raw.remainingWaiting ?? raw.totalWaiting ?? 0
-        );
-        const extractedCounters = Number(
-          raw.activeCounters ?? raw.openCounters ?? 10
-        );
-
-        setService({
-          ...raw,
-          currentlyServingNumber: isNaN(extractedServing) ? 100 : extractedServing,
-          currentQueueCount: isNaN(extractedQueueCount) ? 0 : extractedQueueCount,
-          activeCounters: isNaN(extractedCounters) ? 10 : extractedCounters
-        });
+        setService(res.data[0]);
       }
     } catch (err) {
-      console.error('Error fetching live queue:', err);
+      // background sync catch
     }
-  }, []);
+  }, [activeToken]);
 
   useEffect(() => {
     let isMounted = true;
@@ -220,7 +229,7 @@ const TicketTracker = ({ onBack }) => {
     fetchLiveData(isMounted);
     const interval = setInterval(() => {
       fetchLiveData(isMounted);
-    }, 2000);
+    }, 2500);
 
     return () => {
       isMounted = false;
@@ -228,45 +237,60 @@ const TicketTracker = ({ onBack }) => {
     };
   }, [fetchLiveData]);
 
-  const handleAnalyzeToken = (e) => {
+  const handleAnalyzeToken = async (e) => {
     e.preventDefault();
-    if (!tokenInput.trim()) return;
+    const query = tokenInput.trim();
+    if (!query) return;
 
     setError(null);
     setLoading(true);
 
-    const parsedNumber = parseInt(tokenInput.replace(/\D/g, ''), 10);
+    try {
+      let res = null;
+      if (query.length === 32) {
+        try {
+          res = await trackTicketByToken(query);
+        } catch {
+          res = await getTicketDetails(query);
+        }
+      } else {
+        res = await getTicketDetails(query);
+      }
 
-    if (isNaN(parsedNumber)) {
-      setError('Please enter a valid token number (e.g., A-234 or 234)');
+      if (!res || !res.ticket) {
+        throw new Error('Ticket not found in queue system');
+      }
+
+      const tokenState = {
+        raw: res.ticket.ticketNumber,
+        _id: res.ticket._id,
+        trackingToken: res.ticket.trackingToken,
+        ticket: res.ticket,
+        peopleAhead: res.peopleAhead,
+        position: res.position,
+        estimatedWaitMin: res.estimatedWaitMin,
+        status: res.ticket.status
+      };
+
+      setActiveToken(tokenState);
+      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify({
+        raw: res.ticket.ticketNumber,
+        _id: res.ticket._id,
+        trackingToken: res.ticket.trackingToken
+      }));
+    } catch (err) {
+      setError(err.response?.data?.error || err.message || 'Ticket not found. Please enter a valid ticket number (e.g. REG-001).');
+    } finally {
       setLoading(false);
-      return;
     }
-
-    setTimeout(() => {
-      setActiveToken({
-        raw: tokenInput.trim().toUpperCase(),
-        number: parsedNumber
-      });
-      setLoading(false);
-    }, 300);
   };
 
-  // Queue Calculations (Adjusted for dynamic token delay)
-  const currentServingNum = Number(service?.currentlyServingNumber ?? 100);
-  const activeCounters = Math.max(1, Number(service?.activeCounters ?? 10));
-  
-  // Each delay request dynamically pushes token 5 positions back
-  const pushedOffset = delayCount * 5;
-  const rawPeopleAhead = activeToken 
-    ? Math.max(0, Number(activeToken.number) - currentServingNum) 
-    : 0;
-  const peopleAhead = rawPeopleAhead + pushedOffset;
-
-  const avgMinsPerPerson = 3; 
-  const estimatedWaitMinutes = Math.max(0, Math.ceil((peopleAhead * avgMinsPerPerson) / activeCounters));
+  // Authoritative Queue Calculations directly from backend truth
+  const activeCounters = Math.max(1, Number(service?.activeCounters ?? 1));
+  const peopleAhead = activeToken?.peopleAhead ?? 0;
+  const estimatedWaitMinutes = activeToken?.estimatedWaitMin ?? 0;
   const isUserTurnNext = peopleAhead <= 3 && peopleAhead > 0;
-  const isUserTurnNow = peopleAhead === 0 && activeToken;
+  const isUserTurnNow = (peopleAhead === 0 && !!activeToken) || activeToken?.status === 'CALLED' || activeToken?.status === 'SERVING';
 
   // Handle Delay Action
   const handleRequestDelay = () => {
@@ -375,11 +399,11 @@ const TicketTracker = ({ onBack }) => {
   }, [peopleAhead, estimatedWaitMinutes, activeCounters]);
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 p-4 sm:p-6 lg:p-8 font-sans">
+    <div className="min-h-screen bg-white text-neutral-900 p-4 sm:p-6 lg:p-8 font-sans">
       <div className="max-w-4xl mx-auto space-y-6">
         
         {/* Top Header */}
-        <div className="flex items-center justify-between border-b border-slate-800 pb-4">
+        <div className="flex items-center justify-between border-b border-neutral-200 pb-4">
           <div className="flex items-center space-x-3">
             {onBack && (
               <button 
@@ -434,14 +458,14 @@ const TicketTracker = ({ onBack }) => {
 
         {/* Form Input */}
         {!activeToken && (
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 sm:p-8 text-center space-y-6 shadow-2xl">
+          <div className="bg-white border border-neutral-200 rounded-2xl p-6 sm:p-8 text-center space-y-6 shadow-sm">
             <div className="max-w-md mx-auto space-y-2">
-              <div className="w-12 h-12 bg-indigo-500/10 border border-indigo-500/30 rounded-xl flex items-center justify-center mx-auto text-indigo-400 mb-4">
+              <div className="w-12 h-12 bg-emerald-50 border border-emerald-200 rounded-xl flex items-center justify-center mx-auto text-emerald-700 mb-4">
                 <Sparkles size={24} />
               </div>
-              <h2 className="text-2xl font-bold text-white">Track Your Queue Turn</h2>
-              <p className="text-sm text-slate-400">
-                Enter your ticket number to trigger custom alarms and live desktop notifications.
+              <h2 className="text-2xl font-bold text-neutral-900">Track Your Queue Turn</h2>
+              <p className="text-sm text-neutral-500">
+                Enter your ticket number to track your turn and live queue position.
               </p>
             </div>
 
@@ -449,20 +473,20 @@ const TicketTracker = ({ onBack }) => {
               <div className="relative">
                 <input
                   type="text"
-                  placeholder="e.g. A-234 or 234"
+                  placeholder="e.g. REG-001 or 001"
                   value={tokenInput}
                   onChange={(e) => setTokenInput(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-700 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 rounded-xl px-4 py-3.5 text-center text-xl font-mono font-bold tracking-wider text-white outline-none transition"
+                  className="w-full bg-white border border-neutral-300 focus:border-emerald-700 focus:ring-1 focus:ring-emerald-700 rounded-xl px-4 py-3.5 text-center text-xl font-mono font-bold tracking-wider text-neutral-900 outline-none transition"
                 />
                 <button
                   type="submit"
                   disabled={loading}
-                  className="w-full mt-3 py-3.5 px-6 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold rounded-xl transition shadow-lg shadow-indigo-600/30 flex items-center justify-center gap-2"
+                  className="w-full mt-3 py-3.5 px-6 bg-emerald-700 hover:bg-emerald-800 text-white font-semibold rounded-xl transition shadow-sm flex items-center justify-center gap-2"
                 >
-                  {loading ? <RefreshCw className="animate-spin" size={18} /> : <><Search size={18} /> Analyze My Turn</>}
+                  {loading ? <RefreshCw className="animate-spin" size={18} /> : <><Search size={18} /> Track My Turn</>}
                 </button>
               </div>
-              {error && <p className="text-xs text-rose-400">{error}</p>}
+              {error && <p className="text-xs text-rose-600">{error}</p>}
             </form>
           </div>
         )}
@@ -472,19 +496,19 @@ const TicketTracker = ({ onBack }) => {
           <div className="space-y-6">
             
             {/* Token & Status Banner */}
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 relative overflow-hidden">
+            <div className="bg-white border border-neutral-200 rounded-2xl p-6 relative overflow-hidden shadow-sm">
               <div className="flex flex-col md:flex-row items-center justify-between gap-6">
                 
                 <div className="flex items-center space-x-4">
-                  <div className="bg-indigo-600/20 border border-indigo-500/40 p-4 rounded-2xl text-center min-w-[110px]">
-                    <span className="text-[10px] uppercase font-semibold text-indigo-300 block">Your Token</span>
-                    <span className="text-3xl font-black font-mono text-indigo-400">{activeToken.raw}</span>
+                  <div className="bg-emerald-50 border border-emerald-200 p-4 rounded-2xl text-center min-w-[110px]">
+                    <span className="text-[10px] uppercase font-semibold text-emerald-800 block">Your Token</span>
+                    <span className="text-3xl font-black font-mono text-emerald-700">{activeToken.raw}</span>
                   </div>
                   <div>
-                    <span className="text-xs font-medium text-slate-400 block uppercase">Currently Serving</span>
-                    <span className="text-2xl font-bold font-mono text-white">A-{currentServingNum}</span>
-                    <p className="text-xs text-slate-400 mt-1">
-                      Active Counters: <span className="text-slate-200 font-bold">{activeCounters}</span>
+                    <span className="text-xs font-medium text-neutral-500 block uppercase">Ticket Status</span>
+                    <span className="text-2xl font-bold font-mono text-neutral-900">{activeToken.status || 'WAITING'}</span>
+                    <p className="text-xs text-neutral-500 mt-1">
+                      Active Counters: <span className="text-neutral-800 font-bold">{activeCounters}</span>
                     </p>
                   </div>
                 </div>
@@ -552,13 +576,13 @@ const TicketTracker = ({ onBack }) => {
             </div>
 
             {/* Dynamic Alarm Manager Control Panel */}
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
+            <div className="bg-white border border-neutral-200 rounded-2xl p-6 space-y-4 shadow-sm">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div>
-                  <h3 className="text-base font-bold text-white flex items-center gap-2">
-                    <Bell size={18} className="text-indigo-400" /> Dynamic Queue Alarm Manager
+                  <h3 className="text-base font-bold text-neutral-900 flex items-center gap-2">
+                    <Bell size={18} className="text-emerald-700" /> Dynamic Queue Alarm Manager
                   </h3>
-                  <p className="text-xs text-slate-400">Set custom minute thresholds to ring an alarm before your turn.</p>
+                  <p className="text-xs text-neutral-500">Set custom minute thresholds to ring an alarm before your turn.</p>
                 </div>
 
                 <form onSubmit={handleAddCustomAlarm} className="flex items-center gap-2">
@@ -570,13 +594,13 @@ const TicketTracker = ({ onBack }) => {
                       placeholder="Mins (e.g. 20)"
                       value={newAlarmInput}
                       onChange={(e) => setNewAlarmInput(e.target.value)}
-                      className="w-32 bg-slate-950 border border-slate-700 focus:border-indigo-500 rounded-xl px-3 py-2 text-xs text-white outline-none"
+                      className="w-32 bg-white border border-neutral-300 focus:border-emerald-700 rounded-xl px-3 py-2 text-xs text-neutral-900 outline-none"
                     />
-                    <span className="absolute right-3 top-2 text-[10px] text-slate-500 font-bold uppercase">m</span>
+                    <span className="absolute right-3 top-2 text-[10px] text-neutral-500 font-bold uppercase">m</span>
                   </div>
                   <button
                     type="submit"
-                    className="px-3 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-semibold flex items-center gap-1 transition shadow-md"
+                    className="px-3 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl text-xs font-semibold flex items-center gap-1 transition shadow-sm"
                   >
                     <Plus size={14} /> Add Alarm
                   </button>
@@ -589,13 +613,13 @@ const TicketTracker = ({ onBack }) => {
                     key={alarm.id}
                     className={`flex items-center gap-2 px-3 py-2 rounded-xl border text-xs font-mono font-medium transition ${
                       alarm.enabled 
-                        ? 'bg-indigo-950/40 border-indigo-500/50 text-indigo-200' 
-                        : 'bg-slate-950/60 border-slate-800 text-slate-500 line-through'
+                        ? 'bg-emerald-50 border-emerald-200 text-emerald-800' 
+                        : 'bg-neutral-50 border-neutral-200 text-neutral-400 line-through'
                     }`}
                   >
                     <button 
                       onClick={() => handleToggleAlarm(alarm.id)}
-                      className={`p-1 rounded-md transition ${alarm.enabled ? 'bg-indigo-600 text-white' : 'bg-slate-800 text-slate-400'}`}
+                      className={`p-1 rounded-md transition ${alarm.enabled ? 'bg-emerald-700 text-white' : 'bg-neutral-200 text-neutral-500'}`}
                       title={alarm.enabled ? 'Disable Alarm' : 'Enable Alarm'}
                     >
                       {alarm.enabled ? <Check size={12} /> : <BellOff size={12} />}
@@ -605,7 +629,7 @@ const TicketTracker = ({ onBack }) => {
                     {!alarm.isDefault && (
                       <button 
                         onClick={() => handleDeleteAlarm(alarm.id)}
-                        className="text-slate-500 hover:text-rose-400 ml-1 p-0.5 rounded transition"
+                        className="text-neutral-400 hover:text-rose-600 ml-1 p-0.5 rounded transition"
                         title="Delete Alarm"
                       >
                         <Trash2 size={12} />
@@ -618,44 +642,44 @@ const TicketTracker = ({ onBack }) => {
 
             {/* Metrics Grid */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              <div className="bg-slate-900/80 border border-slate-800 p-5 rounded-2xl space-y-1">
-                <div className="flex items-center justify-between text-slate-400">
+              <div className="bg-neutral-50 border border-neutral-200 p-5 rounded-2xl space-y-1">
+                <div className="flex items-center justify-between text-neutral-500">
                   <span className="text-xs font-semibold uppercase">People Ahead</span>
-                  <Users size={16} className="text-indigo-400" />
+                  <Users size={16} className="text-neutral-700" />
                 </div>
-                <div className="text-3xl font-bold text-white font-mono">{peopleAhead}</div>
-                <p className="text-xs text-slate-500">
+                <div className="text-3xl font-bold text-neutral-900 font-mono">{peopleAhead}</div>
+                <p className="text-xs text-neutral-500">
                   {pushedOffset > 0 ? `Includes +${pushedOffset} delay shift` : 'In queue before your token'}
                 </p>
               </div>
 
-              <div className="bg-slate-900/80 border border-slate-800 p-5 rounded-2xl space-y-1">
-                <div className="flex items-center justify-between text-slate-400">
+              <div className="bg-neutral-50 border border-neutral-200 p-5 rounded-2xl space-y-1">
+                <div className="flex items-center justify-between text-neutral-500">
                   <span className="text-xs font-semibold uppercase">Estimated Wait</span>
-                  <Clock size={16} className="text-emerald-400" />
+                  <Clock size={16} className="text-emerald-700" />
                 </div>
-                <div className="text-3xl font-bold text-emerald-400 font-mono">{estimatedWaitMinutes} <span className="text-sm">mins</span></div>
-                <p className="text-xs text-slate-500">Based on ~{avgMinsPerPerson}m per counter step</p>
+                <div className="text-3xl font-bold text-emerald-700 font-mono">{estimatedWaitMinutes} <span className="text-sm">mins</span></div>
+                <p className="text-xs text-neutral-500">Based on active counters</p>
               </div>
 
-              <div className="bg-slate-900/80 border border-slate-800 p-5 rounded-2xl space-y-1">
-                <div className="flex items-center justify-between text-slate-400">
+              <div className="bg-neutral-50 border border-neutral-200 p-5 rounded-2xl space-y-1">
+                <div className="flex items-center justify-between text-neutral-500">
                   <span className="text-xs font-semibold uppercase">Queue Status</span>
-                  <Sparkles size={16} className="text-amber-400" />
+                  <Sparkles size={16} className="text-amber-600" />
                 </div>
-                <div className="text-lg font-bold text-slate-200 pt-1">
-                  {service?.crowdLevel || 'LOW CROWD'}
+                <div className="text-lg font-bold text-neutral-800 pt-1">
+                  {service?.crowdLevel || 'NORMAL'}
                 </div>
-                <p className="text-xs text-slate-500">Live system load indicator</p>
+                <p className="text-xs text-neutral-500">Live system load indicator</p>
               </div>
             </div>
 
-            {/* Timeline Chart */}
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
+            {/* Timeline Chart Card */}
+            <div className="bg-white border border-neutral-200 rounded-2xl p-6 space-y-4 shadow-sm">
               <div className="flex items-center justify-between">
                 <div>
-                  <h3 className="text-base font-bold text-white">Turn Estimation Timeline</h3>
-                  <p className="text-xs text-slate-400">Projected queue reduction rate for Token #{activeToken.raw}</p>
+                  <h3 className="text-base font-bold text-neutral-900">Turn Estimation Timeline</h3>
+                  <p className="text-xs text-neutral-500">Projected queue reduction rate for Token #{activeToken.raw}</p>
                 </div>
               </div>
 

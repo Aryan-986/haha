@@ -3,6 +3,9 @@ const router = express.Router();
 const mongoose = require('mongoose');
 const Organization = require('../models/Organization');
 const Department = require('../models/Department');
+const Counter = require('../models/Counter');
+const Worker = require('../models/Worker');
+const Ticket = require('../models/Ticket');
 
 const isValidObjectId = (id) => mongoose.Types.ObjectId.isValid(id);
 
@@ -43,18 +46,67 @@ router.post('/', async (req, res) => {
   }
 });
 
-// GET /api/v1/orgs - Get all organizations
+// GET /api/v1/orgs - Get all organizations (excludes deleted by default)
 router.get('/', async (req, res) => {
   try {
-    const filter = {};
+    const filter = { isDeleted: { $ne: true } };
     if (req.query.type) filter.type = req.query.type;
     if (req.query.status) filter.status = req.query.status;
+    // Allow admin to see deleted with ?includeDeleted=true
+    if (req.query.includeDeleted === 'true') {
+      delete filter.isDeleted;
+    }
 
     const organizations = await Organization.find(filter).sort({ createdAt: -1 });
     res.json(organizations);
   } catch (err) {
     console.error('ERROR in GET /api/v1/orgs:', err);
     res.status(500).json({ error: 'Failed to fetch organizations', details: err.message });
+  }
+});
+
+// GET /api/v1/orgs/:orgId - Get single organization
+router.get('/:orgId', async (req, res) => {
+  try {
+    const { orgId } = req.params;
+    if (!isValidObjectId(orgId)) {
+      return res.status(400).json({ error: 'Invalid Organization ID format' });
+    }
+
+    const org = await Organization.findOne({ _id: orgId, isDeleted: { $ne: true } });
+    if (!org) {
+      return res.status(404).json({ error: 'Organization not found' });
+    }
+
+    res.json(org);
+  } catch (err) {
+    console.error('ERROR in GET /api/v1/orgs/:orgId:', err);
+    res.status(500).json({ error: 'Failed to fetch organization', details: err.message });
+  }
+});
+
+const { archiveOrganization } = require('../services/organizationService');
+
+// DELETE /api/v1/orgs/:orgId - Soft-delete (archive) an organization
+// Requires MASTER_ADMIN role (verified via Clerk session claims)
+router.delete('/:orgId', async (req, res) => {
+  try {
+    const { orgId } = req.params;
+
+    // Verify MASTER_ADMIN role from Clerk session or authenticated context
+    const userRole = req.auth?.sessionClaims?.metadata?.role;
+    const userId = req.auth?.userId;
+
+    const org = await archiveOrganization(orgId, { userRole, userId });
+
+    res.json({
+      success: true,
+      message: `Organization "${org.name}" has been archived successfully`,
+      organization: org
+    });
+  } catch (err) {
+    console.error('ERROR in DELETE /api/v1/orgs/:orgId:', err.message);
+    res.status(err.status || 500).json({ error: err.message });
   }
 });
 
@@ -68,7 +120,7 @@ router.post('/:orgId/departments', async (req, res) => {
       return res.status(400).json({ error: 'Invalid Organization ID format' });
     }
 
-    const organization = await Organization.findById(orgId);
+    const organization = await Organization.findOne({ _id: orgId, isDeleted: { $ne: true } });
     if (!organization) {
       return res.status(404).json({ error: 'Organization not found' });
     }
@@ -111,7 +163,7 @@ router.get('/:orgId/departments', async (req, res) => {
       return res.status(400).json({ error: 'Invalid Organization ID format' });
     }
 
-    const organization = await Organization.findById(orgId);
+    const organization = await Organization.findOne({ _id: orgId, isDeleted: { $ne: true } });
     if (!organization) {
       return res.status(404).json({ error: 'Organization not found' });
     }

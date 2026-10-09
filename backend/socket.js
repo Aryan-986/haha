@@ -46,6 +46,17 @@ function initSocket(httpServer) {
       if (newDeptId) socket.join(`dept:${newDeptId}`);
     });
 
+    // Scoped subscription for citizen ticket tracking
+    socket.on('join_ticket', ({ ticketId, trackingToken }) => {
+      if (ticketId) socket.join(`ticket:${ticketId}`);
+      if (trackingToken) socket.join(`ticket:${trackingToken}`);
+    });
+
+    socket.on('leave_ticket', ({ ticketId, trackingToken }) => {
+      if (ticketId) socket.leave(`ticket:${ticketId}`);
+      if (trackingToken) socket.leave(`ticket:${trackingToken}`);
+    });
+
     socket.on('disconnect', () => {});
   });
 
@@ -53,22 +64,28 @@ function initSocket(httpServer) {
 }
 
 /**
- * Emit a queue event to all clients watching a given org/dept.
+ * Emit a queue event to all clients watching a given org/dept/ticket.
  * Safe to call even before initSocket() — emits are silently skipped if io is null.
  *
- * @param {string} event  - Event name, e.g. 'queue_updated', 'TOKEN_CALLED', 'TOKEN_UPDATED'
- * @param {Object} payload - { orgId?, deptId?, event, ticket?, ... }
+ * @param {string} event  - Event name, e.g. 'queue_updated', 'ticket.called', etc.
+ * @param {Object} payload - { orgId?, deptId?, event, ticket?, ticketId?, trackingToken? }
  */
 function emitQueueEvent(event, payload) {
   if (!io) return;
-  const { orgId, deptId } = payload;
+  const { orgId, deptId, ticket } = payload;
+  const ticketId = ticket?._id ? ticket._id.toString() : (payload.ticketId ? payload.ticketId.toString() : null);
+  const trackingToken = ticket?.trackingToken || payload.trackingToken;
+
+  // Broadcast to ticket room for authorized/citizen tracking
+  if (ticketId) io.to(`ticket:${ticketId}`).emit(event, payload);
+  if (trackingToken) io.to(`ticket:${trackingToken}`).emit(event, payload);
 
   // Broadcast to department room first (most specific), then org room
   if (deptId) io.to(`dept:${deptId}`).emit(event, payload);
   if (orgId) io.to(`org:${orgId}`).emit(event, payload);
 
-  // If neither is provided, global broadcast as last resort
-  if (!deptId && !orgId) io.emit(event, payload);
+  // If none is provided, global broadcast as last resort
+  if (!deptId && !orgId && !ticketId && !trackingToken) io.emit(event, payload);
 }
 
 /**

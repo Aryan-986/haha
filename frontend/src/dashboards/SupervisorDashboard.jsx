@@ -1,40 +1,18 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import axios from 'axios';
 import { io } from 'socket.io-client';
+import { 
+  Users, PlayCircle, CheckCircle, PauseCircle, Clock, 
+  Coffee, RefreshCw, AlertTriangle, Monitor, ArrowRight
+} from 'lucide-react';
 
-const API = 'http://localhost:5000/api/v1';
+const API = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000/api/v1';
 const SOCKET_URL = 'http://localhost:5000';
 
-const STATUS_COLORS = {
-  WAITING: 'text-amber-400 border-amber-700/40 bg-amber-950/30',
-  CALLED: 'text-blue-400 border-blue-700/40 bg-blue-950/30',
-  SERVING: 'text-emerald-400 border-emerald-700/40 bg-emerald-950/30',
-  COMPLETED: 'text-slate-400 border-slate-700 bg-slate-800/30',
-  SNOOZED: 'text-purple-400 border-purple-700/40 bg-purple-950/30',
-  SKIPPED: 'text-orange-400 border-orange-700/40 bg-orange-950/30',
-  NO_SHOW: 'text-red-400 border-red-700/40 bg-red-950/30',
-  TRANSFERRED: 'text-cyan-400 border-cyan-700/40 bg-cyan-950/30',
-};
-
-const COUNTER_STATUS_COLORS = {
-  AVAILABLE: 'bg-emerald-900/30 text-emerald-400 border-emerald-700/40',
-  BUSY: 'bg-blue-900/30 text-blue-400 border-blue-700/40',
-  PAUSED: 'bg-amber-900/30 text-amber-400 border-amber-700/40',
-  OFFLINE: 'bg-slate-800 text-slate-500 border-slate-700',
-};
-
-const ALERT_COLORS = {
-  HIGH_QUEUE: 'bg-red-950/50 border-red-700/40 text-red-300',
-  LONG_WAIT: 'bg-amber-950/50 border-amber-700/40 text-amber-300',
-  COUNTERS_OFFLINE: 'bg-slate-800 border-slate-600 text-slate-300',
-  COUNTERS_ON_BREAK: 'bg-amber-950/30 border-amber-700/30 text-amber-400',
-  LONG_SERVICE: 'bg-orange-950/50 border-orange-700/40 text-orange-300',
-};
-
 const PRIORITY_BADGE = {
-  NORMAL: 'bg-slate-700 text-slate-300',
-  URGENT: 'bg-amber-900/60 text-amber-300',
-  EMERGENCY: 'bg-red-900/60 text-red-300 animate-pulse',
+  NORMAL: 'bg-neutral-100 text-neutral-700 border-neutral-200',
+  URGENT: 'bg-amber-50 text-amber-800 border-amber-200',
+  EMERGENCY: 'bg-rose-50 text-rose-800 border-rose-200 animate-pulse',
 };
 
 function formatDuration(startDate) {
@@ -48,9 +26,9 @@ function formatDuration(startDate) {
 function timeAgo(date) {
   if (!date) return '—';
   const secs = Math.floor((Date.now() - new Date(date)) / 1000);
-  if (secs < 60) return `${secs}s`;
-  if (secs < 3600) return `${Math.floor(secs / 60)}m`;
-  return `${Math.floor(secs / 3600)}h`;
+  if (secs < 60) return `${secs}s ago`;
+  if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
+  return `${Math.floor(secs / 3600)}h ago`;
 }
 
 export default function SupervisorDashboard() {
@@ -61,7 +39,7 @@ export default function SupervisorDashboard() {
   const [liveData, setLiveData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [activeTab, setActiveTab] = useState('overview');
+  const [activeTab, setActiveTab] = useState('queue');
 
   const socketRef = useRef(null);
   const prevScopeRef = useRef({ orgId: '', deptId: '' });
@@ -127,7 +105,14 @@ export default function SupervisorDashboard() {
     setRefreshing(false);
   };
 
-  if (loading) return <div className="p-10 text-center text-slate-400">Loading Supervisor Portal...</div>;
+  if (loading) {
+    return (
+      <div className="max-w-5xl mx-auto p-12 text-center text-neutral-500 font-sans">
+        <RefreshCw className="w-8 h-8 mx-auto animate-spin mb-3 text-neutral-400" />
+        <p className="text-sm font-medium">Loading supervisor portal...</p>
+      </div>
+    );
+  }
 
   const stats = liveData?.stats;
   const dept = liveData?.department;
@@ -135,280 +120,318 @@ export default function SupervisorDashboard() {
   const counters = liveData?.counters || [];
   const alerts = liveData?.alerts || [];
 
-  const tabs = [
-    { id: 'overview', label: 'Overview' },
-    { id: 'queue', label: `Queue (${stats?.waiting || 0})` },
-    { id: 'counters', label: `Counters (${counters.length})` },
-    { id: 'activity', label: 'Activity' },
-  ];
+  // Metrics calculation
+  const waitingTickets = tickets.waiting || [];
+  const servingTickets = [...(tickets.called || []), ...(tickets.serving || [])];
+  const waitingCount = stats?.waiting ?? waitingTickets.length;
+  const servingCount = stats?.serving ?? servingTickets.length;
+  const availableCountersCount = counters.filter(c => c.status === 'AVAILABLE').length;
+  const busyCountersCount = counters.filter(c => c.status === 'BUSY').length;
+  const workersOnBreakCount = counters.filter(c => c.status === 'PAUSED' || c.assignedWorkerId?.status === 'ON_BREAK').length;
+
+  // Longest-waiting ticket
+  const longestWaiting = waitingTickets.length > 0 ? waitingTickets[0] : null;
 
   return (
-    <div className="max-w-5xl mx-auto p-4 space-y-4 text-slate-100 min-h-screen bg-slate-950">
-      {/* ── Header ── */}
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-3">
-        <div className="flex items-center justify-between">
-          <h1 className="text-xl font-bold tracking-tight">
-            🎛 Supervisor Portal
-            {dept && <span className="ml-2 text-sm font-normal text-slate-400">· {dept.name}</span>}
-          </h1>
-          <button onClick={handleRefresh}
-            className={`text-xs px-3 py-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg text-slate-300 transition ${refreshing ? 'animate-pulse' : ''}`}>
-            ⟳ {refreshing ? 'Refreshing...' : 'Refresh'}
+    <div className="max-w-5xl mx-auto p-4 sm:p-6 space-y-6 bg-white min-h-screen text-neutral-900 font-sans">
+      
+      {/* ── Top Header & Department Selector ── */}
+      <section className="border border-neutral-200 rounded-xl p-5 bg-white shadow-sm space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-neutral-100">
+          <div>
+            <h1 className="text-xl font-bold text-neutral-900 flex items-center gap-2">
+              <span>Supervisor Dashboard</span>
+              {dept && <span className="text-sm font-normal text-neutral-500">· {dept.name}</span>}
+            </h1>
+            <p className="text-xs text-neutral-500 mt-0.5">Live queue monitoring and operational metrics</p>
+          </div>
+
+          <button 
+            onClick={handleRefresh}
+            disabled={refreshing}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-neutral-50 border border-neutral-200 hover:bg-neutral-100 text-neutral-700 text-xs font-semibold rounded-lg transition"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
+            <span>{refreshing ? 'Refreshing...' : 'Refresh'}</span>
           </button>
         </div>
-        <div className="grid grid-cols-2 gap-2">
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
-            <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block mb-1">Organization</label>
-            <select value={orgId} onChange={e => setOrgId(e.target.value)}
-              className="w-full bg-slate-800 border border-slate-700 text-xs rounded-lg p-2 text-slate-200 focus:outline-none focus:border-indigo-500">
+            <label className="block text-xs font-semibold text-neutral-600 mb-1">Office / Organization</label>
+            <select 
+              value={orgId} 
+              onChange={e => setOrgId(e.target.value)}
+              className="w-full bg-white border border-neutral-200 text-xs rounded-lg p-2 text-neutral-900 focus:outline-none focus:ring-1 focus:ring-emerald-700"
+            >
               {orgs.map(o => <option key={o._id} value={o._id}>{o.name}</option>)}
             </select>
           </div>
           <div>
-            <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider block mb-1">Department</label>
-            <select value={deptId} onChange={e => setDeptId(e.target.value)}
-              className="w-full bg-slate-800 border border-slate-700 text-xs rounded-lg p-2 text-slate-200 focus:outline-none focus:border-indigo-500">
-              {depts.map(d => <option key={d._id} value={d._id}>{d.name} ({d.prefix})</option>)}
+            <label className="block text-xs font-semibold text-neutral-600 mb-1">Department</label>
+            <select 
+              value={deptId} 
+              onChange={e => setDeptId(e.target.value)}
+              className="w-full bg-white border border-neutral-200 text-xs rounded-lg p-2 text-neutral-900 focus:outline-none focus:ring-1 focus:ring-emerald-700"
+            >
+              {depts.map(d => (
+                <option key={d._id} value={d._id}>
+                  {d.name} ({d.prefix}){d.roomNumber ? ` · Room ${d.roomNumber}` : ''}
+                </option>
+              ))}
             </select>
           </div>
         </div>
-      </div>
+      </section>
 
-      {/* ── Alerts ── */}
+      {/* ── Alerts Banner (if any) ── */}
       {alerts.length > 0 && (
-        <div className="space-y-1.5">
+        <div className="space-y-2">
           {alerts.map((a, i) => (
-            <div key={i} className={`flex items-center gap-2 px-4 py-2.5 rounded-xl border text-sm font-medium ${ALERT_COLORS[a.type] || 'bg-slate-800 border-slate-700 text-slate-300'}`}>
-              <span>{a.type === 'HIGH_QUEUE' ? '⚠' : a.type === 'LONG_WAIT' ? '⏱' : a.type.includes('OFFLINE') ? '🔴' : a.type.includes('BREAK') ? '☕' : '⚡'}</span>
-              {a.message}
+            <div key={i} className="flex items-center gap-2 p-3 bg-amber-50 border border-amber-200 text-amber-900 rounded-lg text-xs font-medium">
+              <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0" />
+              <span>{a.message}</span>
             </div>
           ))}
         </div>
       )}
 
-      {/* ── Stats Bar ── */}
-      {stats && (
-        <div className="grid grid-cols-4 sm:grid-cols-8 gap-2">
-          {[
-            { label: 'Waiting', val: stats.waiting, color: 'text-amber-400' },
-            { label: 'Called', val: stats.called, color: 'text-blue-400' },
-            { label: 'Serving', val: stats.serving, color: 'text-emerald-400' },
-            { label: 'Snoozed', val: stats.snoozed, color: 'text-purple-400' },
-            { label: 'Skipped', val: stats.skipped, color: 'text-orange-400' },
-            { label: 'No-Show', val: stats.noShow, color: 'text-red-400' },
-            { label: 'Done', val: stats.completed, color: 'text-slate-400' },
-            { label: 'ETA', val: `${stats.estimatedWaitMin}m`, color: 'text-indigo-400' },
-          ].map(({ label, val, color }) => (
-            <div key={label} className="bg-slate-900 border border-slate-800 rounded-xl p-2.5 text-center">
-              <div className={`text-xl font-black ${color}`}>{val}</div>
-              <div className="text-[10px] text-slate-500 font-medium">{label}</div>
-            </div>
-          ))}
+      {/* ── Key Operational Metrics (Summary Cards) ── */}
+      <section className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+        {/* 1. Waiting Tickets */}
+        <div className="bg-neutral-50 border border-neutral-200 rounded-xl p-3.5 text-center">
+          <div className="text-2xl font-black text-neutral-900 font-mono">{waitingCount}</div>
+          <div className="text-xs font-medium text-neutral-500 mt-1 flex items-center justify-center gap-1">
+            <Users className="w-3.5 h-3.5 text-neutral-400" />
+            <span>Waiting</span>
+          </div>
         </div>
-      )}
 
-      {/* ── Tabs ── */}
-      <div className="flex gap-1 bg-slate-900 border border-slate-800 rounded-xl p-1">
-        {tabs.map(t => (
-          <button key={t.id} onClick={() => setActiveTab(t.id)}
-            className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition ${activeTab === t.id ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'}`}>
-            {t.label}
-          </button>
-        ))}
+        {/* 2. Currently Serving */}
+        <div className="bg-neutral-50 border border-neutral-200 rounded-xl p-3.5 text-center">
+          <div className="text-2xl font-black text-emerald-700 font-mono">{servingCount}</div>
+          <div className="text-xs font-medium text-neutral-500 mt-1 flex items-center justify-center gap-1">
+            <PlayCircle className="w-3.5 h-3.5 text-emerald-600" />
+            <span>Serving</span>
+          </div>
+        </div>
+
+        {/* 3. Available Counters */}
+        <div className="bg-neutral-50 border border-neutral-200 rounded-xl p-3.5 text-center">
+          <div className="text-2xl font-black text-emerald-700 font-mono">{availableCountersCount}</div>
+          <div className="text-xs font-medium text-neutral-500 mt-1 flex items-center justify-center gap-1">
+            <CheckCircle className="w-3.5 h-3.5 text-emerald-600" />
+            <span>Available</span>
+          </div>
+        </div>
+
+        {/* 4. Busy Counters */}
+        <div className="bg-neutral-50 border border-neutral-200 rounded-xl p-3.5 text-center">
+          <div className="text-2xl font-black text-neutral-900 font-mono">{busyCountersCount}</div>
+          <div className="text-xs font-medium text-neutral-500 mt-1 flex items-center justify-center gap-1">
+            <Monitor className="w-3.5 h-3.5 text-neutral-400" />
+            <span>Busy</span>
+          </div>
+        </div>
+
+        {/* 5. Workers on Break */}
+        <div className="bg-neutral-50 border border-neutral-200 rounded-xl p-3.5 text-center">
+          <div className="text-2xl font-black text-amber-700 font-mono">{workersOnBreakCount}</div>
+          <div className="text-xs font-medium text-neutral-500 mt-1 flex items-center justify-center gap-1">
+            <Coffee className="w-3.5 h-3.5 text-amber-600" />
+            <span>On Break</span>
+          </div>
+        </div>
+
+        {/* 6. Longest Wait */}
+        <div className="bg-neutral-50 border border-neutral-200 rounded-xl p-3.5 text-center">
+          <div className="text-base font-bold text-neutral-900 truncate">
+            {longestWaiting ? timeAgo(longestWaiting.createdAt) : '—'}
+          </div>
+          <div className="text-xs font-medium text-neutral-500 mt-1 flex items-center justify-center gap-1">
+            <Clock className="w-3.5 h-3.5 text-neutral-400" />
+            <span>Longest Wait</span>
+          </div>
+        </div>
+      </section>
+
+      {/* ── Navigation Tabs ── */}
+      <div className="flex border-b border-neutral-200 gap-4 text-xs font-semibold">
+        <button
+          onClick={() => setActiveTab('queue')}
+          className={`pb-2.5 transition border-b-2 ${
+            activeTab === 'queue'
+              ? 'border-emerald-700 text-emerald-800'
+              : 'border-transparent text-neutral-500 hover:text-neutral-900'
+          }`}
+        >
+          Department Queue ({waitingCount})
+        </button>
+        <button
+          onClick={() => setActiveTab('counters')}
+          className={`pb-2.5 transition border-b-2 ${
+            activeTab === 'counters'
+              ? 'border-emerald-700 text-emerald-800'
+              : 'border-transparent text-neutral-500 hover:text-neutral-900'
+          }`}
+        >
+          Counters ({counters.length})
+        </button>
+        <button
+          onClick={() => setActiveTab('activity')}
+          className={`pb-2.5 transition border-b-2 ${
+            activeTab === 'activity'
+              ? 'border-emerald-700 text-emerald-800'
+              : 'border-transparent text-neutral-500 hover:text-neutral-900'
+          }`}
+        >
+          Recent Activity
+        </button>
       </div>
 
-      {/* ── Overview Tab ── */}
-      {activeTab === 'overview' && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {/* Active Serving */}
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-2">
-            <p className="text-[10px] font-semibold text-emerald-500 uppercase tracking-widest">Currently Serving</p>
-            {(tickets.serving || []).length === 0 && (tickets.called || []).length === 0 ? (
-              <p className="text-xs text-slate-600 italic">No active service</p>
-            ) : (
-              [...(tickets.called || []), ...(tickets.serving || [])].map(t => (
-                <div key={t._id} className="flex items-center gap-2 bg-slate-800/50 rounded-lg px-3 py-2">
-                  <span className="font-mono font-bold text-sm">{t.ticketNumber}</span>
-                  <span className={`text-[10px] px-1.5 py-0.5 rounded border font-semibold ${STATUS_COLORS[t.status]}`}>{t.status}</span>
-                  <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold ${PRIORITY_BADGE[t.priority]}`}>{t.priority}</span>
-                  {t.serviceStartedAt && <span className="ml-auto text-[10px] text-slate-500">{formatDuration(t.serviceStartedAt)}</span>}
-                </div>
-              ))
-            )}
-          </div>
-
-          {/* Top of Queue */}
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-2">
-            <p className="text-[10px] font-semibold text-amber-500 uppercase tracking-widest">Next in Queue</p>
-            {(tickets.waiting || []).length === 0 ? (
-              <p className="text-xs text-slate-600 italic">Queue is empty</p>
-            ) : (
-              (tickets.waiting || []).slice(0, 6).map((t, i) => (
-                <div key={t._id} className="flex items-center gap-2 bg-slate-800/30 rounded-lg px-3 py-1.5">
-                  <span className="text-[10px] text-slate-600 w-4">{i + 1}.</span>
-                  <span className="font-mono font-bold text-sm">{t.ticketNumber}</span>
-                  <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold ${PRIORITY_BADGE[t.priority]}`}>{t.priority}</span>
-                  <span className="ml-auto text-[10px] text-slate-500">wait {timeAgo(t.createdAt)}</span>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* ── Queue Tab ── */}
+      {/* ── TAB 1: Department Queue ── */}
       {activeTab === 'queue' && (
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="border-b border-slate-800 text-slate-500">
-                <th className="text-left px-4 py-2.5 font-semibold">#</th>
-                <th className="text-left px-4 py-2.5 font-semibold">Ticket</th>
-                <th className="text-left px-4 py-2.5 font-semibold">Priority</th>
-                <th className="text-left px-4 py-2.5 font-semibold">Status</th>
-                <th className="text-left px-4 py-2.5 font-semibold">Counter</th>
-                <th className="text-right px-4 py-2.5 font-semibold">Waiting</th>
-              </tr>
-            </thead>
-            <tbody>
-              {[
-                ...(tickets.called || []),
-                ...(tickets.serving || []),
-                ...(tickets.waiting || []),
-                ...(tickets.snoozed || []),
-              ].map((t, i) => (
-                <tr key={t._id} className="border-b border-slate-800/50 hover:bg-slate-800/30 transition">
-                  <td className="px-4 py-2 text-slate-600">{i + 1}</td>
-                  <td className="px-4 py-2 font-mono font-bold">{t.ticketNumber}</td>
-                  <td className="px-4 py-2"><span className={`px-1.5 py-0.5 rounded-full font-semibold text-[10px] ${PRIORITY_BADGE[t.priority]}`}>{t.priority}</span></td>
-                  <td className="px-4 py-2"><span className={`px-1.5 py-0.5 rounded border text-[10px] font-semibold ${STATUS_COLORS[t.status]}`}>{t.status}</span></td>
-                  <td className="px-4 py-2 text-slate-400">{t.counterNumber ? `C${t.counterNumber}` : '—'}</td>
-                  <td className="px-4 py-2 text-right text-slate-500">{timeAgo(t.createdAt)}</td>
-                </tr>
-              ))}
-              {!tickets.waiting?.length && !tickets.called?.length && !tickets.serving?.length && (
-                <tr><td colSpan={6} className="px-4 py-6 text-center text-slate-600 italic">Queue is empty</td></tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+        <section className="border border-neutral-200 rounded-xl overflow-hidden bg-white shadow-sm">
+          <div className="p-4 bg-neutral-50 border-b border-neutral-200 flex items-center justify-between">
+            <h2 className="text-xs font-bold text-neutral-700 uppercase tracking-wider">Live Department Queue</h2>
+            <span className="text-xs text-neutral-500">{waitingCount} Waiting Tickets</span>
+          </div>
+
+          {waitingTickets.length > 0 ? (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-neutral-200 bg-neutral-50/50 text-neutral-500 font-semibold text-left">
+                    <th className="py-2.5 px-4 w-12">#</th>
+                    <th className="py-2.5 px-4">Ticket Number</th>
+                    <th className="py-2.5 px-4">Priority</th>
+                    <th className="py-2.5 px-4">Status</th>
+                    <th className="py-2.5 px-4 text-right">Waiting Time</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-neutral-100">
+                  {waitingTickets.map((t, index) => (
+                    <tr key={t._id} className="hover:bg-neutral-50 transition">
+                      <td className="py-2.5 px-4 font-mono text-neutral-400">{index + 1}</td>
+                      <td className="py-2.5 px-4 font-mono font-bold text-neutral-900 text-sm">{t.ticketNumber}</td>
+                      <td className="py-2.5 px-4">
+                        <span className={`inline-flex px-2 py-0.5 rounded-full text-[11px] font-semibold border ${PRIORITY_BADGE[t.priority]}`}>
+                          {t.priority}
+                        </span>
+                      </td>
+                      <td className="py-2.5 px-4">
+                        <span className="inline-flex px-2 py-0.5 rounded text-[11px] font-medium bg-neutral-100 text-neutral-700 border border-neutral-200">
+                          {t.status}
+                        </span>
+                      </td>
+                      <td className="py-2.5 px-4 text-right text-neutral-500 font-mono">
+                        {timeAgo(t.createdAt)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="p-12 text-center text-neutral-500 space-y-1">
+              <CheckCircle className="w-8 h-8 mx-auto text-emerald-600 mb-2" />
+              <p className="text-sm font-semibold text-neutral-800">No tickets currently waiting in queue</p>
+              <p className="text-xs text-neutral-500">All citizens in this department have been served or called.</p>
+            </div>
+          )}
+        </section>
       )}
 
-      {/* ── Counters Tab ── */}
+      {/* ── TAB 2: Counters ── */}
       {activeTab === 'counters' && (
-        <div className="space-y-3">
-          {counters.length === 0 ? (
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 text-center text-slate-600 italic">
-              No counters configured for this department.
-            </div>
-          ) : counters.map(c => (
-            <div key={c._id} className={`bg-slate-900 border rounded-2xl p-4 ${c.status === 'AVAILABLE' ? 'border-emerald-800/40' : c.status === 'BUSY' ? 'border-blue-800/40' : c.status === 'PAUSED' ? 'border-amber-800/40' : 'border-slate-800'}`}>
-              <div className="flex items-start justify-between gap-3">
-                <div className="space-y-1">
-                  <div className="flex items-center gap-2">
-                    <span className="text-base font-black">{c.name || `Counter ${c.counterNumber}`}</span>
-                    <span className={`text-[10px] px-2 py-0.5 rounded-full border font-semibold ${COUNTER_STATUS_COLORS[c.status] || 'bg-slate-800 text-slate-400'}`}>
-                      {c.status}
-                    </span>
+        <section className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          {counters.length > 0 ? (
+            counters.map(c => (
+              <div key={c._id} className="border border-neutral-200 rounded-xl p-4 bg-white shadow-sm space-y-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="font-bold text-sm text-neutral-900">{c.name || `Counter ${c.counterNumber}`}</h3>
+                    <p className="text-xs text-neutral-500">
+                      Staff: {c.assignedWorkerId?.name || 'Unassigned'}
+                      {c.assignedWorkerId?.status === 'ON_BREAK' && (
+                        <span className="text-amber-700 font-medium ml-1">· On Break</span>
+                      )}
+                    </p>
                   </div>
-                  <div className="text-xs text-slate-400">
-                    Worker: <span className="font-semibold text-slate-300">{c.assignedWorkerId?.name || '— Unassigned —'}</span>
-                    {c.assignedWorkerId?.status && (
-                      <span className={`ml-2 text-[10px] ${c.assignedWorkerId.status === 'ON_BREAK' ? 'text-amber-400' : 'text-slate-500'}`}>
-                        [{c.assignedWorkerId.status}]
+                  <span className={`px-2.5 py-0.5 rounded-full text-xs font-semibold border ${
+                    c.status === 'AVAILABLE' 
+                      ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                      : c.status === 'BUSY'
+                      ? 'bg-blue-50 text-blue-800 border-blue-200'
+                      : 'bg-neutral-100 text-neutral-700 border-neutral-200'
+                  }`}>
+                    {c.status}
+                  </span>
+                </div>
+
+                {c.currentTicketId ? (
+                  <div className="p-3 bg-neutral-50 border border-neutral-200 rounded-lg flex items-center justify-between">
+                    <div>
+                      <span className="text-[10px] text-neutral-500 uppercase font-semibold block">Serving Ticket</span>
+                      <span className="font-mono font-bold text-base text-neutral-900">{c.currentTicketId.ticketNumber}</span>
+                    </div>
+                    {c.currentTicketId.serviceStartedAt && (
+                      <span className="text-xs text-neutral-500 font-mono">
+                        {formatDuration(c.currentTicketId.serviceStartedAt)}
                       </span>
                     )}
                   </div>
-                </div>
-                <div className="text-right">
-                  {c.currentTicketId ? (
-                    <div className="space-y-0.5">
-                      <p className="font-mono font-black text-lg text-indigo-400">{c.currentTicketId.ticketNumber}</p>
-                      <p className="text-[10px] text-slate-500">{c.currentTicketId.status}</p>
-                      {c.currentTicketId.serviceStartedAt && (
-                        <p className="text-[10px] text-emerald-500">{formatDuration(c.currentTicketId.serviceStartedAt)}</p>
-                      )}
-                    </div>
-                  ) : (
-                    <span className="text-xs text-slate-600 italic">Idle</span>
-                  )}
-                </div>
+                ) : (
+                  <div className="py-3 text-center text-xs text-neutral-400 bg-neutral-50 rounded-lg border border-neutral-100">
+                    Counter is idle
+                  </div>
+                )}
               </div>
+            ))
+          ) : (
+            <div className="col-span-2 p-8 border border-neutral-200 rounded-xl text-center text-xs text-neutral-500 bg-neutral-50">
+              No counters configured for this department.
             </div>
-          ))}
-        </div>
+          )}
+        </section>
       )}
 
-      {/* ── Activity Tab ── */}
+      {/* ── TAB 3: Recent Activity ── */}
       {activeTab === 'activity' && (
-        <div className="space-y-3">
-          {/* Skipped */}
-          {(tickets.skipped || []).length > 0 && (
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
-              <p className="text-[10px] font-semibold text-orange-500 uppercase tracking-widest mb-2">Skipped Tickets</p>
-              <div className="space-y-1">
-                {tickets.skipped.map(t => (
-                  <div key={t._id} className="flex items-center gap-2 bg-orange-950/20 border border-orange-800/30 rounded-lg px-3 py-1.5">
-                    <span className="font-mono font-bold text-sm text-orange-300">{t.ticketNumber}</span>
-                    <span className="text-[10px] text-slate-500 ml-auto">{timeAgo(t.updatedAt)} ago</span>
+        <section className="border border-neutral-200 rounded-xl p-5 bg-white shadow-sm space-y-4">
+          <h2 className="text-xs font-bold text-neutral-700 uppercase tracking-wider">Completed & Transferred Tickets</h2>
+          
+          {(tickets.completed || []).length > 0 || (tickets.transferred || []).length > 0 ? (
+            <div className="space-y-2">
+              {(tickets.completed || []).slice(0, 8).map(t => (
+                <div key={t._id} className="p-3 bg-neutral-50 border border-neutral-100 rounded-lg flex items-center justify-between text-xs">
+                  <div className="flex items-center gap-2">
+                    <CheckCircle className="w-4 h-4 text-emerald-600" />
+                    <span className="font-mono font-bold text-neutral-900">{t.ticketNumber}</span>
+                    <span className="text-neutral-500">Service completed</span>
                   </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* No-Show */}
-          {(tickets.noShow || []).length > 0 && (
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
-              <p className="text-[10px] font-semibold text-red-500 uppercase tracking-widest mb-2">No-Show Tickets</p>
-              <div className="space-y-1">
-                {tickets.noShow.map(t => (
-                  <div key={t._id} className="flex items-center gap-2 bg-red-950/20 border border-red-800/30 rounded-lg px-3 py-1.5">
-                    <span className="font-mono font-bold text-sm text-red-300">{t.ticketNumber}</span>
-                    <span className="text-[10px] text-slate-500 ml-auto">{timeAgo(t.updatedAt)} ago</span>
+                  <span className="text-neutral-400 font-mono">{timeAgo(t.completedAt || t.updatedAt)}</span>
+                </div>
+              ))}
+              {(tickets.transferred || []).map(t => (
+                <div key={t._id} className="p-3 bg-neutral-50 border border-neutral-100 rounded-lg flex items-center justify-between text-xs">
+                  <div className="flex items-center gap-2">
+                    <ArrowRight className="w-4 h-4 text-neutral-500" />
+                    <span className="font-mono font-bold text-neutral-900">{t.ticketNumber}</span>
+                    <span className="text-neutral-500">Transferred to another department</span>
                   </div>
-                ))}
-              </div>
+                  <span className="text-neutral-400 font-mono">{timeAgo(t.updatedAt)}</span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="py-8 text-center text-xs text-neutral-500">
+              No recent activity recorded for this department today.
             </div>
           )}
-
-          {/* Transferred */}
-          {(tickets.transferred || []).length > 0 && (
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
-              <p className="text-[10px] font-semibold text-cyan-500 uppercase tracking-widest mb-2">Transferred Out</p>
-              <div className="space-y-1">
-                {tickets.transferred.map(t => (
-                  <div key={t._id} className="flex items-center gap-2 bg-cyan-950/20 border border-cyan-800/30 rounded-lg px-3 py-1.5">
-                    <span className="font-mono font-bold text-sm text-cyan-300">{t.ticketNumber}</span>
-                    <span className="text-[10px] text-slate-500 ml-auto">{timeAgo(t.updatedAt)} ago</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Recent Completed */}
-          {(tickets.completed || []).length > 0 && (
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
-              <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-widest mb-2">Recently Completed</p>
-              <div className="space-y-1">
-                {tickets.completed.slice(0, 10).map(t => (
-                  <div key={t._id} className="flex items-center gap-2 bg-slate-800/40 rounded-lg px-3 py-1.5">
-                    <span className="font-mono font-bold text-sm text-slate-400">{t.ticketNumber}</span>
-                    <span className="text-[10px] text-slate-600 ml-auto">{timeAgo(t.completedAt)} ago</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {!tickets.skipped?.length && !tickets.noShow?.length && !tickets.transferred?.length && !tickets.completed?.length && (
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 text-center text-slate-600 italic">
-              No activity yet for this department.
-            </div>
-          )}
-        </div>
+        </section>
       )}
+
     </div>
   );
 }

@@ -8,67 +8,202 @@ const router = express.Router();
 const mongoose = require('mongoose');
 const queueService = require('../services/queueService');
 const Ticket = require('../models/Ticket');
+const citizenService = require('../services/citizenService');
 
 const isValidObjectId = (id) => mongoose.Types.ObjectId.isValid(id);
 
 // POST /api/v1/tickets - Issue a new Ticket
 router.post('/', async (req, res) => {
   try {
-    const { organizationId, departmentId, serviceId, priority, source, roomNumber } = req.body;
+    const { organizationId, departmentId, serviceId, priority, source, roomNumber, idempotencyKey } = req.body;
+    const key = req.headers['idempotency-key'] || idempotencyKey;
+
     const result = await queueService.issueTicket({
       organizationId,
       departmentId,
       serviceId,
       priority,
       source,
-      roomNumber
+      roomNumber,
+      idempotencyKey: key
     });
-    res.status(201).json({ success: true, ...result });
+    res.status(result.isIdempotent ? 200 : 201).json({ success: true, ...result });
   } catch (err) {
     console.error('Error in POST /api/v1/tickets:', err);
     res.status(err.status || 400).json({ success: false, error: err.message });
   }
 });
 
-// GET /api/v1/tickets/:id - Get Ticket details and dynamic position
+// GET /api/v1/tickets/track/:trackingToken - Secure anonymous ticket tracking
+router.get('/track/:trackingToken', async (req, res) => {
+  try {
+    const { trackingToken } = req.params;
+    if (!trackingToken || typeof trackingToken !== 'string') {
+      return res.status(400).json({ success: false, error: 'Valid tracking token is required' });
+    }
+
+    const ticket = await citizenService.getTicketByTrackingToken(trackingToken);
+    const positionData = await citizenService.getTicketPosition(ticket._id);
+    const etaData = await citizenService.getTicketETA(ticket._id);
+
+    // Return citizen-safe representation
+    res.json({
+      success: true,
+      ticket: {
+        _id: ticket._id,
+        ticketNumber: ticket.ticketNumber,
+        trackingToken: ticket.trackingToken,
+        status: ticket.status,
+        priority: ticket.priority,
+        source: ticket.source,
+        createdAt: ticket.createdAt,
+        calledAt: ticket.calledAt,
+        serviceStartedAt: ticket.serviceStartedAt,
+        completedAt: ticket.completedAt,
+        organization: ticket.organizationId ? {
+          _id: ticket.organizationId._id,
+          name: ticket.organizationId.name,
+          type: ticket.organizationId.type
+        } : null,
+        department: ticket.currentDepartmentId ? {
+          _id: ticket.currentDepartmentId._id,
+          name: ticket.currentDepartmentId.name,
+          prefix: ticket.currentDepartmentId.prefix,
+          roomNumber: ticket.currentDepartmentId.roomNumber
+        } : null,
+        counter: ticket.currentCounterId ? {
+          _id: ticket.currentCounterId._id,
+          counterNumber: ticket.currentCounterId.counterNumber,
+          name: ticket.currentCounterId.name
+        } : null,
+        roomNumber: ticket.roomNumber,
+        snoozeInfo: ticket.snoozeInfo,
+        history: ticket.history
+      },
+      peopleAhead: positionData.peopleAhead,
+      position: positionData.position,
+      estimatedWaitMin: etaData.estimatedWaitMin,
+      etaDetails: etaData
+    });
+  } catch (err) {
+    console.error('Error in GET /api/v1/tickets/track/:trackingToken:', err);
+    res.status(err.status || 500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /api/v1/tickets/:id - Get Ticket details and dynamic priority-aware position
 router.get('/:id', async (req, res) => {
   try {
     const { id } = req.params;
     let ticket = null;
 
     if (isValidObjectId(id)) {
-      ticket = await Ticket.findById(id).populate('currentDepartmentId').populate('organizationId');
+      ticket = await Ticket.findById(id)
+        .populate('currentDepartmentId')
+        .populate('organizationId')
+        .populate('currentCounterId');
     }
     if (!ticket) {
       ticket = await Ticket.findOne({ ticketNumber: id.trim().toUpperCase() })
         .populate('currentDepartmentId')
-        .populate('organizationId');
+        .populate('organizationId')
+        .populate('currentCounterId');
     }
 
     if (!ticket) {
       return res.status(404).json({ success: false, error: 'Ticket not found' });
     }
 
-    // Derive live position ahead in queue
-    let peopleAhead = 0;
-    if (['WAITING', 'TRANSFERRED', 'SNOOZED'].includes(ticket.status)) {
-      peopleAhead = await Ticket.countDocuments({
-        organizationId: ticket.organizationId,
-        currentDepartmentId: ticket.currentDepartmentId,
-        status: { $in: ['WAITING', 'TRANSFERRED', 'SNOOZED'] },
-        createdAt: { $lt: ticket.createdAt }
-      });
-    }
+    const positionData = await citizenService.getTicketPosition(ticket._id);
+    const etaData = await citizenService.getTicketETA(ticket._id);
 
     res.json({
       success: true,
       ticket,
-      peopleAhead,
-      position: peopleAhead + 1
+      peopleAhead: positionData.peopleAhead,
+      position: positionData.position,
+      estimatedWaitMin: etaData.estimatedWaitMin,
+      etaDetails: etaData
     });
   } catch (err) {
     console.error('Error in GET /api/v1/tickets/:id:', err);
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /api/v1/tickets/:id/position - Real priority-aware queue position
+router.get('/:id/position', async (req, res) => {
+  try {
+    const { id } = req.params;
+    let ticketId = id;
+    if (!isValidObjectId(id)) {
+      const ticket = await Ticket.findOne({ ticketNumber: id.trim().toUpperCase() });
+      if (!ticket) return res.status(404).json({ success: false, error: 'Ticket not found' });
+      ticketId = ticket._id;
+    }
+
+    const pos = await citizenService.getTicketPosition(ticketId);
+    res.json({ success: true, ...pos });
+  } catch (err) {
+    console.error('Error in GET /api/v1/tickets/:id/position:', err);
+    res.status(err.status || 500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /api/v1/tickets/:id/eta - Live calculated waiting time
+router.get('/:id/eta', async (req, res) => {
+  try {
+    const { id } = req.params;
+    let ticketId = id;
+    if (!isValidObjectId(id)) {
+      const ticket = await Ticket.findOne({ ticketNumber: id.trim().toUpperCase() });
+      if (!ticket) return res.status(404).json({ success: false, error: 'Ticket not found' });
+      ticketId = ticket._id;
+    }
+
+    const eta = await citizenService.getTicketETA(ticketId);
+    res.json({ success: true, ...eta });
+  } catch (err) {
+    console.error('Error in GET /api/v1/tickets/:id/eta:', err);
+    res.status(err.status || 500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /api/v1/tickets/:id/journey - Multi-department journey stages
+router.get('/:id/journey', async (req, res) => {
+  try {
+    const { id } = req.params;
+    let ticketId = id;
+    if (!isValidObjectId(id)) {
+      const ticket = await Ticket.findOne({ ticketNumber: id.trim().toUpperCase() });
+      if (!ticket) return res.status(404).json({ success: false, error: 'Ticket not found' });
+      ticketId = ticket._id;
+    }
+
+    const journey = await citizenService.getTicketJourney(ticketId);
+    res.json({ success: true, ...journey });
+  } catch (err) {
+    console.error('Error in GET /api/v1/tickets/:id/journey:', err);
+    res.status(err.status || 500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /api/v1/tickets/:id/events - Immutable QueueEvent audit timeline (safe fields)
+router.get('/:id/events', async (req, res) => {
+  try {
+    const { id } = req.params;
+    let ticketId = id;
+    if (!isValidObjectId(id)) {
+      const ticket = await Ticket.findOne({ ticketNumber: id.trim().toUpperCase() });
+      if (!ticket) return res.status(404).json({ success: false, error: 'Ticket not found' });
+      ticketId = ticket._id;
+    }
+
+    const events = await citizenService.getTicketEvents(ticketId);
+    res.json({ success: true, events });
+  } catch (err) {
+    console.error('Error in GET /api/v1/tickets/:id/events:', err);
+    res.status(err.status || 500).json({ success: false, error: err.message });
   }
 });
 

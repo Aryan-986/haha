@@ -10,27 +10,26 @@ import {
   Check,
   ChevronDown,
   ChevronUp,
-  Clock,
   Layers,
   GitFork,
   MapPin,
   Key,
   X,
-  ArrowRight,
   RefreshCw,
   Sparkles,
-  Tag,
-  DoorOpen
+  Trash2,
+  AlertTriangle,
+  FolderTree
 } from 'lucide-react';
 import {
   getOrganizations,
   createOrganization,
   getDepartments,
-  createDepartment
+  createDepartment,
+  deleteOrganization
 } from '../services/organizationService';
 
 export default function MasterAdminDashboard() {
-  // State for organizations and department caches
   const [organizations, setOrganizations] = useState([]);
   const [departmentsByOrg, setDepartmentsByOrg] = useState({});
   const [loading, setLoading] = useState(true);
@@ -62,7 +61,37 @@ export default function MasterAdminDashboard() {
   const [errorMessage, setErrorMessage] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
 
-  // Initial load
+  // Delete organization state
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
+  const [orgToDelete, setOrgToDelete] = useState(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+
+  const handleDeleteOrgConfirm = async () => {
+    if (!orgToDelete) return;
+    try {
+      setIsDeleting(true);
+      setErrorMessage('');
+      await deleteOrganization(orgToDelete._id);
+      setOrganizations((prev) => prev.filter((o) => o._id !== orgToDelete._id));
+      setDepartmentsByOrg((prev) => {
+        const next = { ...prev };
+        delete next[orgToDelete._id];
+        return next;
+      });
+      if (expandedOrgId === orgToDelete._id) {
+        setExpandedOrgId(null);
+      }
+      setSuccessMessage(`Organization "${orgToDelete.name}" has been deleted/archived successfully.`);
+      setIsDeleteModalOpen(false);
+      setOrgToDelete(null);
+    } catch (err) {
+      console.error('Failed to delete organization:', err);
+      setErrorMessage(err.response?.data?.error || err.message || 'Failed to delete organization');
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
   useEffect(() => {
     fetchInitialData();
   }, []);
@@ -74,7 +103,6 @@ export default function MasterAdminDashboard() {
       const orgs = await getOrganizations();
       setOrganizations(orgs);
 
-      // Auto-load departments for all organizations in parallel to compute counts
       const deptMap = {};
       await Promise.all(
         orgs.map(async (org) => {
@@ -88,7 +116,6 @@ export default function MasterAdminDashboard() {
       );
       setDepartmentsByOrg(deptMap);
 
-      // Automatically expand first organization if available
       if (orgs.length > 0 && !expandedOrgId) {
         setExpandedOrgId(orgs[0]._id);
       }
@@ -106,7 +133,6 @@ export default function MasterAdminDashboard() {
     setRefreshing(false);
   };
 
-  // Toggle card expansion and load departments if not already loaded
   const toggleExpandOrg = async (orgId) => {
     if (expandedOrgId === orgId) {
       setExpandedOrgId(null);
@@ -124,7 +150,6 @@ export default function MasterAdminDashboard() {
     }
   };
 
-  // Copy API key to clipboard with visual confirmation
   const handleCopyApiKey = (apiKey, orgId) => {
     if (!apiKey) return;
     navigator.clipboard.writeText(apiKey);
@@ -132,7 +157,6 @@ export default function MasterAdminDashboard() {
     setTimeout(() => setCopiedKeyId(null), 2500);
   };
 
-  // Submit new Organization
   const handleCreateOrgSubmit = async (e) => {
     e.preventDefault();
     if (!orgForm.name.trim()) return;
@@ -144,12 +168,10 @@ export default function MasterAdminDashboard() {
       const res = await createOrganization(orgForm);
       const newOrg = res.organization || res;
 
-      // Reactively update state
       setOrganizations((prev) => [newOrg, ...prev]);
       setDepartmentsByOrg((prev) => ({ ...prev, [newOrg._id]: [] }));
       setExpandedOrgId(newOrg._id);
 
-      // Reset & close modal
       setOrgForm({ name: '', type: 'GOVERNMENT', address: '' });
       setIsOrgModalOpen(false);
       setSuccessMessage(`Organization "${newOrg.name}" created successfully!`);
@@ -162,11 +184,9 @@ export default function MasterAdminDashboard() {
     }
   };
 
-  // Open Add Department modal for a specific organization
   const handleOpenAddDeptModal = (org) => {
     setTargetOrgForDept(org);
     const existingDepts = departmentsByOrg[org._id] || [];
-    // Default isEntryLevel to true if this is the first department
     setDeptForm({
       name: '',
       prefix: '',
@@ -178,7 +198,6 @@ export default function MasterAdminDashboard() {
     setIsDeptModalOpen(true);
   };
 
-  // Submit new Department
   const handleCreateDeptSubmit = async (e) => {
     e.preventDefault();
     if (!targetOrgForDept || !deptForm.name.trim() || !deptForm.prefix.trim()) return;
@@ -204,7 +223,6 @@ export default function MasterAdminDashboard() {
       const res = await createDepartment(targetOrgForDept._id, deptPayload);
       const newDept = res.department || res;
 
-      // Reactively update departments list in state for this organization
       setDepartmentsByOrg((prev) => {
         const existing = prev[targetOrgForDept._id] || [];
         const updated = newDept.isEntryLevel
@@ -224,63 +242,62 @@ export default function MasterAdminDashboard() {
     }
   };
 
-  // Helper to render type badge
   const renderTypeBadge = (type) => {
     switch (type) {
       case 'HOSPITAL':
         return (
-          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">
+          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-blue-50 text-blue-800 border border-blue-200">
             <Hospital className="w-3.5 h-3.5" /> Hospital
           </span>
         );
       case 'GOVERNMENT':
         return (
-          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20">
+          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-50 text-amber-800 border border-amber-200">
             <Landmark className="w-3.5 h-3.5" /> Government
           </span>
         );
       case 'PRIVATE':
       default:
         return (
-          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-purple-500/10 text-purple-400 border border-purple-500/20">
+          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-neutral-100 text-neutral-800 border border-neutral-200">
             <Briefcase className="w-3.5 h-3.5" /> Private
           </span>
         );
     }
   };
 
-  // Compute total counts
   const totalOrgs = organizations.length;
   const allDepts = Object.values(departmentsByOrg).flat();
   const totalDepts = allDepts.length;
   const totalEntryLevel = allDepts.filter((d) => d.isEntryLevel).length;
 
   return (
-    <div className="p-6 max-w-6xl mx-auto space-y-6">
-      {/* Header Banner */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-slate-900/80 border border-slate-800 backdrop-blur-xl rounded-2xl p-6 shadow-2xl">
+    <div className="p-4 sm:p-6 max-w-5xl mx-auto space-y-6 bg-white min-h-screen text-neutral-900 font-sans">
+      
+      {/* ── Header ── */}
+      <div className="border border-neutral-200 rounded-xl p-5 bg-white shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <div className="flex items-center gap-3 mb-1">
-            <h1 className="text-2xl font-black tracking-tight text-white">
-              Master Admin Hierarchy Portal
+          <div className="flex items-center gap-2 mb-1">
+            <h1 className="text-xl font-bold text-neutral-900">
+              Master Admin Dashboard
             </h1>
-            <span className="bg-indigo-500/10 border border-indigo-500/30 text-indigo-400 text-xs px-3 py-1 rounded-full font-bold flex items-center gap-1.5">
-              <ShieldCheck className="w-3.5 h-3.5" /> Super Admin
+            <span className="bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs px-2.5 py-0.5 rounded-full font-semibold flex items-center gap-1">
+              <ShieldCheck className="w-3.5 h-3.5" /> Admin
             </span>
           </div>
-          <p className="text-xs text-slate-400">
-            Manage multi-tenant institutions, dynamic counter tiers, and multi-stage token transition workflows.
+          <p className="text-xs text-neutral-500">
+            Create, view, manage, and archive organizations and their service departments
           </p>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
           <button
             onClick={handleRefresh}
             disabled={refreshing}
-            className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold py-2.5 px-3.5 rounded-xl border border-slate-700 transition active:scale-95 disabled:opacity-50"
+            className="p-2.5 bg-neutral-50 border border-neutral-200 hover:bg-neutral-100 text-neutral-700 text-xs font-semibold rounded-lg transition"
             title="Refresh list"
           >
-            <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
+            <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
           </button>
 
           <button
@@ -288,340 +305,222 @@ export default function MasterAdminDashboard() {
               setErrorMessage('');
               setIsOrgModalOpen(true);
             }}
-            className="flex items-center gap-2 bg-gradient-to-r from-indigo-600 to-indigo-500 hover:from-indigo-500 hover:to-indigo-400 text-white text-xs font-bold py-2.5 px-4 rounded-xl shadow-lg shadow-indigo-600/25 transition active:scale-95 cursor-pointer"
+            className="flex items-center gap-1.5 bg-emerald-700 hover:bg-emerald-800 active:bg-emerald-900 text-white text-xs font-bold py-2.5 px-4 rounded-lg transition shadow-sm"
           >
             <PlusCircle className="w-4 h-4" />
-            <span>+ Add Organization</span>
+            <span>Create Organization</span>
           </button>
         </div>
       </div>
 
-      {/* Quick Metrics Bar */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <div className="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-4 flex items-center gap-4">
-          <div className="w-12 h-12 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400">
-            <Building2 className="w-6 h-6" />
+      {/* ── Summary Stats Bar ── */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div className="bg-neutral-50 border border-neutral-200 rounded-xl p-4 flex items-center gap-3">
+          <div className="w-10 h-10 rounded-lg bg-emerald-50 border border-emerald-200 flex items-center justify-center text-emerald-700">
+            <Building2 className="w-5 h-5" />
           </div>
           <div>
-            <div className="text-2xl font-black text-white">{totalOrgs}</div>
-            <div className="text-xs text-slate-400 font-medium">Registered Organizations</div>
+            <div className="text-2xl font-black text-neutral-900 font-mono">{totalOrgs}</div>
+            <div className="text-xs text-neutral-500 font-medium">Total Organizations</div>
           </div>
         </div>
 
-        <div className="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-4 flex items-center gap-4">
-          <div className="w-12 h-12 rounded-xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center text-cyan-400">
-            <Layers className="w-6 h-6" />
+        <div className="bg-neutral-50 border border-neutral-200 rounded-xl p-4 flex items-center gap-3">
+          <div className="w-10 h-10 rounded-lg bg-neutral-100 border border-neutral-200 flex items-center justify-center text-neutral-700">
+            <Layers className="w-5 h-5" />
           </div>
           <div>
-            <div className="text-2xl font-black text-white">{totalDepts}</div>
-            <div className="text-xs text-slate-400 font-medium">Configured Departments</div>
+            <div className="text-2xl font-black text-neutral-900 font-mono">{totalDepts}</div>
+            <div className="text-xs text-neutral-500 font-medium">Total Departments</div>
           </div>
         </div>
 
-        <div className="bg-slate-900/60 border border-slate-800/80 rounded-2xl p-4 flex items-center gap-4">
-          <div className="w-12 h-12 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
-            <GitFork className="w-6 h-6" />
+        <div className="bg-neutral-50 border border-neutral-200 rounded-xl p-4 flex items-center gap-3">
+          <div className="w-10 h-10 rounded-lg bg-emerald-50 border border-emerald-200 flex items-center justify-center text-emerald-700">
+            <GitFork className="w-5 h-5" />
           </div>
           <div>
-            <div className="text-2xl font-black text-white">{totalEntryLevel}</div>
-            <div className="text-xs text-slate-400 font-medium">Entry-Level Reception Tiers</div>
+            <div className="text-2xl font-black text-neutral-900 font-mono">{totalEntryLevel}</div>
+            <div className="text-xs text-neutral-500 font-medium">Entry-Level Reception Tiers</div>
           </div>
         </div>
       </div>
 
-      {/* Notifications */}
+      {/* ── Alerts & Notifications ── */}
       {successMessage && (
-        <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs flex items-center gap-2 animate-fade-in">
-          <Sparkles className="w-4 h-4 shrink-0" />
+        <div className="p-3.5 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-900 text-xs flex items-center gap-2">
+          <Sparkles className="w-4 h-4 text-emerald-700 shrink-0" />
           <span>{successMessage}</span>
         </div>
       )}
 
       {errorMessage && (
-        <div className="p-4 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs flex items-center justify-between animate-fade-in">
-          <span>{errorMessage}</span>
-          <button onClick={() => setErrorMessage('')} className="text-rose-400 hover:text-rose-300">
+        <div className="p-3.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-900 text-xs flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-rose-700 shrink-0" />
+            <span>{errorMessage}</span>
+          </div>
+          <button onClick={() => setErrorMessage('')} className="text-rose-700 hover:text-rose-900">
             <X className="w-4 h-4" />
           </button>
         </div>
       )}
 
-      {/* Loading state */}
+      {/* ── Organization Cards List ── */}
       {loading ? (
-        <div className="bg-slate-900/50 border border-slate-800 rounded-2xl p-12 text-center text-slate-400 flex flex-col items-center gap-3">
-          <RefreshCw className="w-6 h-6 animate-spin text-indigo-400" />
-          <span className="text-xs">Loading organizational hierarchy data...</span>
+        <div className="border border-neutral-200 rounded-xl p-12 text-center text-neutral-500 flex flex-col items-center gap-2 bg-neutral-50">
+          <RefreshCw className="w-6 h-6 animate-spin text-neutral-400" />
+          <span className="text-xs">Loading organizations...</span>
         </div>
       ) : organizations.length === 0 ? (
-        /* Empty State */
-        <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-12 text-center text-slate-400 flex flex-col items-center gap-4">
-          <div className="w-16 h-16 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400">
-            <Building2 className="w-8 h-8" />
+        <div className="border border-neutral-200 rounded-xl p-12 text-center text-neutral-500 flex flex-col items-center gap-3 bg-neutral-50">
+          <Building2 className="w-10 h-10 text-neutral-400" />
+          <div>
+            <h3 className="text-sm font-bold text-neutral-800">No Organizations Found</h3>
+            <p className="text-xs text-neutral-500 mt-1">Create your first organization to configure queues and departments.</p>
           </div>
-          <div className="max-w-md">
-            <h3 className="text-base font-bold text-white mb-1">No Organizations Configured</h3>
-            <p className="text-xs text-slate-400 mb-4">
-              Add your first hospital, government office, or enterprise organization to begin building multi-stage token counters.
-            </p>
-            <button
-              onClick={() => setIsOrgModalOpen(true)}
-              className="inline-flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold py-2.5 px-4 rounded-xl transition"
-            >
-              <PlusCircle className="w-4 h-4" /> Register Organization
-            </button>
-          </div>
+          <button
+            onClick={() => setIsOrgModalOpen(true)}
+            className="mt-2 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold py-2 px-4 rounded-lg transition"
+          >
+            Create Organization
+          </button>
         </div>
       ) : (
-        /* Organizations Card List */
-        <div className="space-y-4">
+        <div className="space-y-3">
           {organizations.map((org) => {
             const depts = departmentsByOrg[org._id] || [];
             const isExpanded = expandedOrgId === org._id;
-            const entryDept = depts.find((d) => d.isEntryLevel);
-            const downstreamDepts = depts.filter((d) => !d.isEntryLevel);
 
             return (
               <div
                 key={org._id}
-                className="bg-slate-900/90 border border-slate-800 hover:border-slate-700/80 transition duration-200 rounded-2xl overflow-hidden shadow-xl"
+                className="border border-neutral-200 rounded-xl bg-white shadow-sm overflow-hidden"
               >
-                {/* Organization Header Bar */}
-                <div className="p-5 flex flex-col md:flex-row md:items-center justify-between gap-4">
-                  <div className="flex items-start gap-4">
-                    <div className="w-12 h-12 rounded-xl bg-slate-800/80 border border-slate-700/60 flex items-center justify-center shrink-0 text-indigo-400">
+                {/* Organization Row */}
+                <div className="p-4 sm:p-5 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                  <div className="flex items-start gap-3">
+                    <div className="w-10 h-10 rounded-lg bg-neutral-100 border border-neutral-200 flex items-center justify-center shrink-0 text-neutral-700">
                       {org.type === 'HOSPITAL' ? (
-                        <Hospital className="w-6 h-6 text-cyan-400" />
+                        <Hospital className="w-5 h-5 text-blue-700" />
                       ) : org.type === 'GOVERNMENT' ? (
-                        <Landmark className="w-6 h-6 text-amber-400" />
+                        <Landmark className="w-5 h-5 text-amber-700" />
                       ) : (
-                        <Building2 className="w-6 h-6 text-purple-400" />
+                        <Building2 className="w-5 h-5 text-neutral-700" />
                       )}
                     </div>
 
                     <div className="space-y-1">
                       <div className="flex flex-wrap items-center gap-2">
-                        <h2 className="text-base font-bold text-white tracking-wide">{org.name}</h2>
+                        <h2 className="text-base font-bold text-neutral-900">{org.name}</h2>
                         {renderTypeBadge(org.type)}
-                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-200">
                           {org.status || 'ACTIVE'}
                         </span>
                       </div>
 
                       {org.address && (
-                        <div className="flex items-center gap-1.5 text-xs text-slate-400">
-                          <MapPin className="w-3.5 h-3.5 text-slate-500" />
+                        <div className="flex items-center gap-1 text-xs text-neutral-500">
+                          <MapPin className="w-3.5 h-3.5 text-neutral-400" />
                           <span>{org.address}</span>
                         </div>
                       )}
                     </div>
                   </div>
 
-                  <div className="flex flex-wrap items-center gap-3">
-                    {/* API Key Copy Pill */}
+                  <div className="flex flex-wrap items-center gap-2">
+                    {/* API Key */}
                     {org.apiKey && (
                       <div
                         onClick={() => handleCopyApiKey(org.apiKey, org._id)}
-                        className="group flex items-center gap-2 bg-slate-950 border border-slate-800 hover:border-indigo-500/50 px-3 py-1.5 rounded-xl cursor-pointer transition"
+                        className="flex items-center gap-1.5 bg-neutral-50 border border-neutral-200 px-2.5 py-1.5 rounded-lg cursor-pointer hover:bg-neutral-100 transition text-xs text-neutral-700"
                         title="Click to copy API Key"
                       >
-                        <Key className="w-3.5 h-3.5 text-indigo-400" />
-                        <span className="text-[11px] font-mono text-slate-300">
-                          {org.apiKey.slice(0, 6)}••••{org.apiKey.slice(-4)}
+                        <Key className="w-3 h-3 text-neutral-500" />
+                        <span className="font-mono text-[11px]">
+                          {org.apiKey.slice(0, 6)}••••
                         </span>
                         {copiedKeyId === org._id ? (
-                          <span className="flex items-center gap-1 text-[10px] text-emerald-400 font-bold">
-                            <Check className="w-3 h-3" /> Copied
-                          </span>
+                          <Check className="w-3 h-3 text-emerald-600" />
                         ) : (
-                          <Copy className="w-3 h-3 text-slate-500 group-hover:text-indigo-400 transition" />
+                          <Copy className="w-3 h-3 text-neutral-400" />
                         )}
                       </div>
                     )}
 
-                    {/* Department count indicator */}
-                    <span className="px-3 py-1.5 bg-slate-800 text-slate-300 text-xs font-semibold rounded-xl border border-slate-700/60">
-                      {depts.length} {depts.length === 1 ? 'Department' : 'Departments'}
+                    <span className="px-2.5 py-1.5 bg-neutral-100 text-neutral-700 text-xs font-medium rounded-lg border border-neutral-200">
+                      {depts.length} {depts.length === 1 ? 'Dept' : 'Depts'}
                     </span>
 
-                    {/* Manage / Toggle Button */}
+                    {/* Manage / Toggle */}
                     <button
                       onClick={() => toggleExpandOrg(org._id)}
-                      className="flex items-center gap-1.5 bg-indigo-600/10 hover:bg-indigo-600/20 text-indigo-300 text-xs font-semibold px-3.5 py-1.5 rounded-xl border border-indigo-500/20 transition cursor-pointer"
+                      className="inline-flex items-center gap-1 bg-neutral-100 hover:bg-neutral-200 text-neutral-800 text-xs font-semibold px-3 py-1.5 rounded-lg border border-neutral-200 transition"
                     >
-                      <span>{isExpanded ? 'Hide Hierarchy' : 'View Hierarchy'}</span>
-                      {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                      <span>{isExpanded ? 'Hide' : 'Manage'}</span>
+                      {isExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                    </button>
+
+                    {/* Delete / Archive */}
+                    <button
+                      onClick={() => {
+                        setOrgToDelete(org);
+                        setIsDeleteModalOpen(true);
+                      }}
+                      className="inline-flex items-center gap-1 bg-white hover:bg-rose-50 text-rose-700 text-xs font-semibold px-3 py-1.5 rounded-lg border border-rose-200 transition"
+                      title="Delete or Archive Organization"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Archive</span>
                     </button>
                   </div>
                 </div>
 
-                {/* Expanded Department Hierarchy Tree */}
+                {/* Expanded Section */}
                 {isExpanded && (
-                  <div className="border-t border-slate-800/80 bg-slate-950/60 p-6 space-y-6 animate-fade-in">
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                      <div>
-                        <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
-                          <GitFork className="w-4 h-4 text-indigo-400" />
-                          Department & Counter Hierarchy Tree
-                        </h3>
-                        <p className="text-[11px] text-slate-500 mt-0.5">
-                          Tokens are issued at entry-level departments and transferred across downstream counters.
-                        </p>
+                  <div className="border-t border-neutral-200 bg-neutral-50 p-5 space-y-4">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-neutral-200">
+                      <div className="flex items-center gap-1.5 text-xs font-bold text-neutral-700 uppercase tracking-wider">
+                        <FolderTree className="w-4 h-4 text-emerald-700" />
+                        <span>Configured Departments & Services</span>
                       </div>
 
                       <button
                         onClick={() => handleOpenAddDeptModal(org)}
-                        className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold py-2 px-3.5 rounded-xl shadow-md shadow-indigo-600/20 transition active:scale-95 cursor-pointer w-fit"
+                        className="inline-flex items-center gap-1 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold py-1.5 px-3 rounded-lg transition"
                       >
                         <PlusCircle className="w-3.5 h-3.5" />
-                        <span>+ Add Department / Counter</span>
+                        <span>Add Department</span>
                       </button>
                     </div>
 
                     {depts.length === 0 ? (
-                      <div className="border border-dashed border-slate-800 rounded-xl p-8 text-center text-slate-500 space-y-3">
-                        <p className="text-xs">No departments configured yet for {org.name}.</p>
-                        <button
-                          onClick={() => handleOpenAddDeptModal(org)}
-                          className="text-xs text-indigo-400 hover:text-indigo-300 font-semibold underline underline-offset-4"
-                        >
-                          + Add the first Entry-Level Department
-                        </button>
+                      <div className="p-6 text-center text-xs text-neutral-500 bg-white rounded-lg border border-dashed border-neutral-200">
+                        No departments created yet for this organization.
                       </div>
                     ) : (
-                      /* Tree Visualization */
-                      <div className="space-y-6">
-                        {/* ROOT NODE: Organization */}
-                        <div className="relative pl-6 before:content-[''] before:absolute before:left-2.5 before:top-8 before:bottom-0 before:w-0.5 before:bg-slate-800">
-                          <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-800/80 border border-slate-700 text-xs font-bold text-white shadow-md">
-                            <Building2 className="w-4 h-4 text-indigo-400" />
-                            <span>{org.name}</span>
-                            <span className="text-[10px] text-slate-400 font-normal">
-                              (Root Organization)
-                            </span>
-                          </div>
-
-                          {/* ENTRY LEVEL NODE(S) */}
-                          <div className="mt-4 space-y-3">
-                            <div className="text-[11px] font-bold text-emerald-400 uppercase tracking-wider flex items-center gap-1.5">
-                              <span>⭐ Stage 1: Entry-Level Station (Token Dispenser Target)</span>
-                            </div>
-
-                            {entryDept ? (
-                              <div className="bg-gradient-to-r from-emerald-950/40 to-slate-900 border border-emerald-500/40 rounded-xl p-4 shadow-lg relative">
-                                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                                  <div className="space-y-1">
-                                    <div className="flex items-center gap-2">
-                                      <span className="px-2 py-0.5 rounded-md font-mono text-xs font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                                        [{entryDept.prefix}]
-                                      </span>
-                                      <h4 className="text-sm font-bold text-white">{entryDept.name}</h4>
-                                      <span className="text-[10px] bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded-full font-semibold">
-                                        Entry Level
-                                      </span>
-                                    </div>
-                                    <div className="flex items-center gap-4 text-xs text-slate-400">
-                                      <span className="flex items-center gap-1">
-                                        <Clock className="w-3.5 h-3.5 text-slate-500" />
-                                        Avg Service: {entryDept.avgServiceTimeMins || 5} mins
-                                      </span>
-                                      {entryDept.roomNumber && (
-                                        <span className="flex items-center gap-1">
-                                          <DoorOpen className="w-3.5 h-3.5 text-cyan-400" />
-                                          Room {entryDept.roomNumber}
-                                        </span>
-                                      )}
-                                    </div>
-                                  </div>
-
-                                  {/* Sub-counters chips */}
-                                  <div className="flex flex-wrap items-center gap-1.5">
-                                    {entryDept.subCounters && entryDept.subCounters.length > 0 ? (
-                                      entryDept.subCounters.map((counter, idx) => (
-                                        <span
-                                          key={idx}
-                                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium bg-slate-950 border border-slate-800 text-slate-300"
-                                        >
-                                          <Tag className="w-3 h-3 text-emerald-400" />
-                                          {counter}
-                                        </span>
-                                      ))
-                                    ) : (
-                                      <span className="text-xs text-slate-500 italic">No sub-counters</span>
-                                    )}
-                                  </div>
-                                </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        {depts.map((d) => (
+                          <div
+                            key={d._id}
+                            className="p-3 bg-white border border-neutral-200 rounded-lg flex items-center justify-between text-xs"
+                          >
+                            <div>
+                              <div className="font-bold text-neutral-900 flex items-center gap-1.5">
+                                <span>{d.name}</span>
+                                <span className="font-mono text-neutral-500 text-[11px]">({d.prefix})</span>
+                                {d.isEntryLevel && (
+                                  <span className="px-1.5 py-0.5 rounded text-[10px] bg-emerald-50 text-emerald-800 border border-emerald-200 font-semibold">
+                                    Entry Level
+                                  </span>
+                                )}
                               </div>
-                            ) : (
-                              <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl text-amber-400 text-xs flex items-center justify-between">
-                                <span>No entry-level department designated yet!</span>
-                                <button
-                                  onClick={() => handleOpenAddDeptModal(org)}
-                                  className="text-xs font-bold underline"
-                                >
-                                  Configure One
-                                </button>
-                              </div>
-                            )}
-                          </div>
-
-                          {/* DOWNSTREAM / TRANSFER DEPARTMENTS */}
-                          {downstreamDepts.length > 0 && (
-                            <div className="mt-6 space-y-3">
-                              <div className="flex items-center gap-2 text-[11px] font-bold text-slate-400 uppercase tracking-wider">
-                                <ArrowRight className="w-3.5 h-3.5 text-indigo-400" />
-                                <span>Stage 2+: Downstream Specialized Counters (Transfer Flow)</span>
-                              </div>
-
-                              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                {downstreamDepts.map((dept) => (
-                                  <div
-                                    key={dept._id}
-                                    className="bg-slate-900 border border-slate-800 hover:border-slate-700/80 rounded-xl p-4 space-y-3 transition"
-                                  >
-                                    <div className="flex items-center justify-between gap-2">
-                                      <div className="flex items-center gap-2">
-                                        <span className="px-2 py-0.5 rounded-md font-mono text-xs font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
-                                          [{dept.prefix}]
-                                        </span>
-                                        <h5 className="text-xs font-bold text-white">{dept.name}</h5>
-                                      </div>
-
-                                      <div className="flex items-center gap-2">
-                                        <span className="flex items-center gap-1 text-[11px] text-slate-400">
-                                          <Clock className="w-3 h-3 text-slate-500" />
-                                          {dept.avgServiceTimeMins || 5}m
-                                        </span>
-                                        {dept.roomNumber && (
-                                          <span className="flex items-center gap-1 text-[11px] text-cyan-400">
-                                            <DoorOpen className="w-3 h-3" />
-                                            Room {dept.roomNumber}
-                                          </span>
-                                        )}
-                                      </div>
-                                    </div>
-
-                                    {/* Sub-counters */}
-                                    <div className="flex flex-wrap items-center gap-1.5 pt-1">
-                                      {dept.subCounters && dept.subCounters.length > 0 ? (
-                                        dept.subCounters.map((counter, idx) => (
-                                          <span
-                                            key={idx}
-                                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-medium bg-slate-950 border border-slate-800 text-slate-300"
-                                          >
-                                            <Tag className="w-2.5 h-2.5 text-indigo-400" />
-                                            {counter}
-                                          </span>
-                                        ))
-                                      ) : (
-                                        <span className="text-[11px] text-slate-500 italic">Single Counter</span>
-                                      )}
-                                    </div>
-                                  </div>
-                                ))}
+                              <div className="text-neutral-500 text-[11px] mt-0.5">
+                                {d.roomNumber ? `Room ${d.roomNumber} · ` : ''}Avg {d.avgServiceTimeMins || 5} min
                               </div>
                             </div>
-                          )}
-                        </div>
+                          </div>
+                        ))}
                       </div>
                     )}
                   </div>
@@ -632,103 +531,68 @@ export default function MasterAdminDashboard() {
         </div>
       )}
 
-      {/* ========================================================== */}
-      {/* MODAL: + Add Organization */}
-      {/* ========================================================== */}
+      {/* ── Modal: Create Organization ── */}
       {isOrgModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-fade-in">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-lg p-6 shadow-2xl space-y-5">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-              <h3 className="text-lg font-bold text-white flex items-center gap-2">
-                <Building2 className="w-5 h-5 text-indigo-400" />
-                Add New Public / Private Organization
-              </h3>
-              <button
-                onClick={() => setIsOrgModalOpen(false)}
-                className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800"
-              >
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-xs">
+          <div className="bg-white border border-neutral-200 rounded-xl max-w-md w-full p-6 shadow-xl space-y-4">
+            <div className="flex items-center justify-between pb-2 border-b border-neutral-100">
+              <h3 className="font-bold text-base text-neutral-900">Create New Organization</h3>
+              <button onClick={() => setIsOrgModalOpen(false)} className="text-neutral-400 hover:text-neutral-600">
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <form onSubmit={handleCreateOrgSubmit} className="space-y-4">
+            <form onSubmit={handleCreateOrgSubmit} className="space-y-3">
               <div>
-                <label className="text-xs font-semibold text-slate-300 mb-1.5 block">
-                  Organization Name *
-                </label>
+                <label className="block text-xs font-semibold text-neutral-700 mb-1">Organization Name *</label>
                 <input
                   type="text"
-                  placeholder="e.g. Patan Hospital or District Administration Office"
+                  required
+                  placeholder="e.g. City General Hospital, District Registry"
                   value={orgForm.name}
                   onChange={(e) => setOrgForm({ ...orgForm, name: e.target.value })}
-                  className="w-full bg-slate-950 border border-slate-800 text-white rounded-xl px-4 py-2.5 text-xs focus:outline-none focus:border-indigo-500"
-                  required
+                  className="w-full bg-white border border-neutral-200 rounded-lg px-3 py-2 text-xs text-neutral-900 focus:outline-none focus:ring-1 focus:ring-emerald-700"
                 />
               </div>
 
               <div>
-                <label className="text-xs font-semibold text-slate-300 mb-1.5 block">
-                  Institution Type *
-                </label>
-                <div className="grid grid-cols-3 gap-2">
-                  {[
-                    { value: 'HOSPITAL', label: 'Hospital', icon: Hospital },
-                    { value: 'GOVERNMENT', label: 'Government', icon: Landmark },
-                    { value: 'PRIVATE', label: 'Private', icon: Briefcase }
-                  ].map((t) => {
-                    const Icon = t.icon;
-                    const isSelected = orgForm.type === t.value;
-                    return (
-                      <button
-                        type="button"
-                        key={t.value}
-                        onClick={() => setOrgForm({ ...orgForm, type: t.value })}
-                        className={`flex items-center justify-center gap-2 p-2.5 rounded-xl border text-xs font-bold transition cursor-pointer ${
-                          isSelected
-                            ? 'bg-indigo-600/20 border-indigo-500 text-indigo-300 shadow-md'
-                            : 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700'
-                        }`}
-                      >
-                        <Icon className="w-3.5 h-3.5" />
-                        <span>{t.label}</span>
-                      </button>
-                    );
-                  })}
-                </div>
+                <label className="block text-xs font-semibold text-neutral-700 mb-1">Type *</label>
+                <select
+                  value={orgForm.type}
+                  onChange={(e) => setOrgForm({ ...orgForm, type: e.target.value })}
+                  className="w-full bg-white border border-neutral-200 rounded-lg px-3 py-2 text-xs text-neutral-900 focus:outline-none focus:ring-1 focus:ring-emerald-700"
+                >
+                  <option value="GOVERNMENT">Government Office</option>
+                  <option value="HOSPITAL">Hospital / Clinic</option>
+                  <option value="PRIVATE">Private Enterprise</option>
+                </select>
               </div>
 
               <div>
-                <label className="text-xs font-semibold text-slate-300 mb-1.5 block">
-                  Physical Location / Address
-                </label>
+                <label className="block text-xs font-semibold text-neutral-700 mb-1">Address / Location</label>
                 <input
                   type="text"
-                  placeholder="e.g. Lagankhel, Lalitpur, Nepal"
+                  placeholder="e.g. Building 4, Central Avenue"
                   value={orgForm.address}
                   onChange={(e) => setOrgForm({ ...orgForm, address: e.target.value })}
-                  className="w-full bg-slate-950 border border-slate-800 text-white rounded-xl px-4 py-2.5 text-xs focus:outline-none focus:border-indigo-500"
+                  className="w-full bg-white border border-neutral-200 rounded-lg px-3 py-2 text-xs text-neutral-900 focus:outline-none focus:ring-1 focus:ring-emerald-700"
                 />
               </div>
 
-              <div className="pt-2 flex items-center justify-end gap-3 border-t border-slate-800">
+              <div className="pt-3 flex justify-end gap-2 border-t border-neutral-100">
                 <button
                   type="button"
                   onClick={() => setIsOrgModalOpen(false)}
-                  className="px-4 py-2 text-xs font-semibold text-slate-400 hover:text-white rounded-xl hover:bg-slate-800 transition"
+                  className="px-4 py-2 text-xs font-medium text-neutral-600 hover:bg-neutral-100 rounded-lg transition"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={formSubmitting}
-                  className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-bold py-2.5 px-5 rounded-xl transition shadow-lg shadow-indigo-600/25"
+                  className="px-4 py-2 bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 text-white text-xs font-bold rounded-lg transition"
                 >
-                  {formSubmitting ? (
-                    <RefreshCw className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <PlusCircle className="w-4 h-4" />
-                  )}
-                  <span>Create Organization</span>
+                  {formSubmitting ? 'Creating...' : 'Create Organization'}
                 </button>
               </div>
             </form>
@@ -736,178 +600,147 @@ export default function MasterAdminDashboard() {
         </div>
       )}
 
-      {/* ========================================================== */}
-      {/* MODAL: + Add Department / Counter */}
-      {/* ========================================================== */}
+      {/* ── Modal: Add Department ── */}
       {isDeptModalOpen && targetOrgForDept && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-fade-in">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-lg p-6 shadow-2xl space-y-5">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-xs">
+          <div className="bg-white border border-neutral-200 rounded-xl max-w-md w-full p-6 shadow-xl space-y-4">
+            <div className="flex items-center justify-between pb-2 border-b border-neutral-100">
               <div>
-                <h3 className="text-lg font-bold text-white flex items-center gap-2">
-                  <Layers className="w-5 h-5 text-cyan-400" />
-                  Add Department / Counter
-                </h3>
-                <p className="text-[11px] text-slate-400">
-                  Adding to <span className="text-white font-bold">{targetOrgForDept.name}</span>
-                </p>
+                <h3 className="font-bold text-base text-neutral-900">Add Department</h3>
+                <p className="text-xs text-neutral-500">To {targetOrgForDept.name}</p>
               </div>
-              <button
-                onClick={() => setIsDeptModalOpen(false)}
-                className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800"
-              >
+              <button onClick={() => setIsDeptModalOpen(false)} className="text-neutral-400 hover:text-neutral-600">
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <form onSubmit={handleCreateDeptSubmit} className="space-y-4">
+            <form onSubmit={handleCreateDeptSubmit} className="space-y-3">
               <div>
-                <label className="text-xs font-semibold text-slate-300 mb-1.5 block">
-                  Department Name *
-                </label>
+                <label className="block text-xs font-semibold text-neutral-700 mb-1">Department Name *</label>
                 <input
                   type="text"
-                  placeholder="e.g. Emergency Triage, Cardiology OPD, Citizenship Desk"
+                  required
+                  placeholder="e.g. Registration, Triage, Cashier"
                   value={deptForm.name}
                   onChange={(e) => setDeptForm({ ...deptForm, name: e.target.value })}
-                  className="w-full bg-slate-950 border border-slate-800 text-white rounded-xl px-4 py-2.5 text-xs focus:outline-none focus:border-indigo-500"
-                  required
+                  className="w-full bg-white border border-neutral-200 rounded-lg px-3 py-2 text-xs text-neutral-900 focus:outline-none focus:ring-1 focus:ring-emerald-700"
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-2 gap-2">
                 <div>
-                  <label className="text-xs font-semibold text-slate-300 mb-1.5 block">
-                    Ticket Prefix * (2-5 letters)
-                  </label>
+                  <label className="block text-xs font-semibold text-neutral-700 mb-1">Ticket Prefix *</label>
                   <input
                     type="text"
+                    required
                     maxLength={5}
-                    placeholder="e.g. TRG, DOC, CIT"
+                    placeholder="e.g. REG, TRI"
                     value={deptForm.prefix}
-                    onChange={(e) =>
-                      setDeptForm({ ...deptForm, prefix: e.target.value.toUpperCase() })
-                    }
-                    className="w-full bg-slate-950 border border-slate-800 text-white font-mono rounded-xl px-4 py-2.5 text-xs focus:outline-none focus:border-indigo-500 uppercase"
-                    required
+                    onChange={(e) => setDeptForm({ ...deptForm, prefix: e.target.value.toUpperCase() })}
+                    className="w-full bg-white border border-neutral-200 rounded-lg px-3 py-2 text-xs font-mono uppercase text-neutral-900 focus:outline-none focus:ring-1 focus:ring-emerald-700"
                   />
                 </div>
-
                 <div>
-                  <label className="text-xs font-semibold text-slate-300 mb-1.5 block">
-                    Avg Service Time (mins)
-                  </label>
+                  <label className="block text-xs font-semibold text-neutral-700 mb-1">Room / Counter</label>
                   <input
-                    type="number"
-                    min={1}
-                    max={120}
-                    value={deptForm.avgServiceTimeMins}
-                    onChange={(e) =>
-                      setDeptForm({ ...deptForm, avgServiceTimeMins: e.target.value })
-                    }
-                    className="w-full bg-slate-950 border border-slate-800 text-white rounded-xl px-4 py-2.5 text-xs focus:outline-none focus:border-indigo-500"
-                    required
+                    type="text"
+                    placeholder="e.g. 101, Desk A"
+                    value={deptForm.roomNumber}
+                    onChange={(e) => setDeptForm({ ...deptForm, roomNumber: e.target.value })}
+                    className="w-full bg-white border border-neutral-200 rounded-lg px-3 py-2 text-xs text-neutral-900 focus:outline-none focus:ring-1 focus:ring-emerald-700"
                   />
                 </div>
               </div>
 
               <div>
-                <label className="text-xs font-semibold text-slate-300 mb-1.5 block">
-                  Sub-Counters (Comma-separated)
-                </label>
+                <label className="block text-xs font-semibold text-neutral-700 mb-1">Avg Service Time (mins)</label>
                 <input
-                  type="text"
-                  placeholder="e.g. Desk 1, Desk 2, Room 105"
-                  value={deptForm.subCountersInput}
-                  onChange={(e) =>
-                    setDeptForm({ ...deptForm, subCountersInput: e.target.value })
-                  }
-                  className="w-full bg-slate-950 border border-slate-800 text-white rounded-xl px-4 py-2.5 text-xs focus:outline-none focus:border-indigo-500"
+                  type="number"
+                  min="1"
+                  value={deptForm.avgServiceTimeMins}
+                  onChange={(e) => setDeptForm({ ...deptForm, avgServiceTimeMins: e.target.value })}
+                  className="w-full bg-white border border-neutral-200 rounded-lg px-3 py-2 text-xs text-neutral-900 focus:outline-none focus:ring-1 focus:ring-emerald-700"
                 />
-                {deptForm.subCountersInput && (
-                  <div className="flex flex-wrap gap-1.5 mt-2">
-                    {deptForm.subCountersInput
-                      .split(',')
-                      .map((s) => s.trim())
-                      .filter(Boolean)
-                      .map((c, i) => (
-                        <span
-                          key={i}
-                          className="px-2 py-0.5 rounded-md text-[10px] bg-slate-800 border border-slate-700 text-slate-300 flex items-center gap-1"
-                        >
-                          <Tag className="w-2.5 h-2.5 text-indigo-400" />
-                          {c}
-                        </span>
-                      ))}
-                  </div>
-                )}
               </div>
 
-              {/* Room Number / Room ID */}
-              <div>
-                <label className="text-xs font-semibold text-slate-300 mb-1.5 block">
-                  Room Number / Room ID (optional)
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g. 105, A-3, Room B"
-                  value={deptForm.roomNumber}
-                  onChange={(e) =>
-                    setDeptForm({ ...deptForm, roomNumber: e.target.value })
-                  }
-                  className="w-full bg-slate-950 border border-slate-800 text-white rounded-xl px-4 py-2.5 text-xs focus:outline-none focus:border-indigo-500"
-                />
-                <p className="text-[10px] text-slate-500 mt-1">
-                  Assign a physical room/counter to this department. Tokens will be queued by room independently.
-                </p>
-              </div>
-
-              {/* Is Entry Level Checkbox */}
-              <div className="bg-slate-950 border border-slate-800 rounded-xl p-3 flex items-start gap-3">
+              <div className="flex items-center gap-2 pt-1">
                 <input
                   type="checkbox"
                   id="isEntryLevel"
                   checked={deptForm.isEntryLevel}
-                  onChange={(e) =>
-                    setDeptForm({ ...deptForm, isEntryLevel: e.target.checked })
-                  }
-                  className="mt-1 w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-slate-700 bg-slate-900 cursor-pointer"
+                  onChange={(e) => setDeptForm({ ...deptForm, isEntryLevel: e.target.checked })}
+                  className="rounded border-neutral-300 text-emerald-700 focus:ring-emerald-700"
                 />
-                <label htmlFor="isEntryLevel" className="text-xs cursor-pointer">
-                  <span className="font-bold text-white block">
-                    Is Entry-Level Station (Initial Check-In)
-                  </span>
-                  <span className="text-[11px] text-slate-400">
-                    New tokens dispensed at kiosk/reception will be routed to this department first.
-                  </span>
+                <label htmlFor="isEntryLevel" className="text-xs text-neutral-700 font-medium cursor-pointer">
+                  Entry-level department (Initial citizen check-in)
                 </label>
               </div>
 
-              <div className="pt-2 flex items-center justify-end gap-3 border-t border-slate-800">
+              <div className="pt-3 flex justify-end gap-2 border-t border-neutral-100">
                 <button
                   type="button"
                   onClick={() => setIsDeptModalOpen(false)}
-                  className="px-4 py-2 text-xs font-semibold text-slate-400 hover:text-white rounded-xl hover:bg-slate-800 transition"
+                  className="px-4 py-2 text-xs font-medium text-neutral-600 hover:bg-neutral-100 rounded-lg transition"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={formSubmitting}
-                  className="flex items-center gap-2 bg-gradient-to-r from-cyan-600 to-indigo-600 hover:from-cyan-500 hover:to-indigo-500 disabled:opacity-50 text-white text-xs font-bold py-2.5 px-5 rounded-xl transition shadow-lg shadow-indigo-600/25"
+                  className="px-4 py-2 bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 text-white text-xs font-bold rounded-lg transition"
                 >
-                  {formSubmitting ? (
-                    <RefreshCw className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <PlusCircle className="w-4 h-4" />
-                  )}
-                  <span>Add Department</span>
+                  {formSubmitting ? 'Adding...' : 'Add Department'}
                 </button>
               </div>
             </form>
           </div>
         </div>
       )}
+
+      {/* ── Confirmation Modal: Archive / Delete Organization ── */}
+      {isDeleteModalOpen && orgToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-xs">
+          <div className="bg-white border border-neutral-200 rounded-xl max-w-md w-full p-6 shadow-xl space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-lg bg-rose-50 border border-rose-200 flex items-center justify-center text-rose-700 shrink-0">
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="font-bold text-base text-neutral-900">Archive Organization?</h3>
+                <p className="text-xs text-neutral-500">Please confirm organization deletion</p>
+              </div>
+            </div>
+
+            <p className="text-xs text-neutral-600 leading-relaxed">
+              Are you sure you want to archive/delete <strong>"{orgToDelete.name}"</strong>? This will safely mark the organization as deleted and prevent new tickets from being created.
+            </p>
+
+            <div className="pt-3 flex justify-end gap-2 border-t border-neutral-100">
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={() => {
+                  setIsDeleteModalOpen(false);
+                  setOrgToDelete(null);
+                }}
+                className="px-4 py-2 text-xs font-medium text-neutral-600 hover:bg-neutral-100 rounded-lg transition"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={handleDeleteOrgConfirm}
+                className="px-4 py-2 bg-rose-700 hover:bg-rose-800 disabled:opacity-50 text-white text-xs font-bold rounded-lg transition flex items-center gap-1.5"
+              >
+                {isDeleting ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                <span>{isDeleting ? 'Archiving...' : 'Confirm Archive / Delete'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }

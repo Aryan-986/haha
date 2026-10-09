@@ -564,6 +564,14 @@ router.get('/queue/dept/:deptId', deptQueueHandler);
 // =======================================================================
 const dispenseTokenHandler = async (req, res) => {
   try {
+    // 1. Development-only safeguard: reject in production
+    if (process.env.NODE_ENV === 'production') {
+      return res.status(403).json({
+        success: false,
+        error: 'Hardware Kiosk Simulator is disabled in production environments'
+      });
+    }
+
     const { orgId, deptId, source, priority, roomNumber } = req.body;
 
     let targetDept = null;
@@ -580,17 +588,25 @@ const dispenseTokenHandler = async (req, res) => {
     }
 
     if (targetDept && targetOrgId) {
+      // 2. Validate organization is active and not archived
+      const org = await Organization.findOne({ _id: targetOrgId, isDeleted: { $ne: true } });
+      if (!org || org.status === 'INACTIVE') {
+        return res.status(400).json({ success: false, error: 'Organization is inactive or archived' });
+      }
+
+      // 3. Issue ticket through authoritative queue engine
       const result = await queueService.issueTicket({
         organizationId: targetOrgId,
         departmentId: targetDept._id,
         priority: priority || 'NORMAL',
-        source: source || 'KIOSK',
+        source: 'KIOSK',
         roomNumber
       });
 
       return res.status(201).json({
         success: true,
-        source: source || 'KIOSK',
+        source: 'KIOSK',
+        isSimulation: true,
         ticketNumber: result.ticketNumber,
         ticket: result.ticket,
         department: result.department,

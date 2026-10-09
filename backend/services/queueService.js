@@ -37,12 +37,36 @@ async function generateAtomicTicketNumber(organizationId, departmentId, prefix) 
 /**
  * Issue a new Ticket into a Department queue
  */
-async function issueTicket({ organizationId, departmentId, serviceId, priority = 'NORMAL', source = 'KIOSK', roomNumber }) {
+async function issueTicket({ organizationId, departmentId, serviceId, priority = 'NORMAL', source = 'KIOSK', roomNumber, idempotencyKey }) {
   if (!isValidObjectId(organizationId)) {
     throw new Error('Valid organizationId is required');
   }
   if (!isValidObjectId(departmentId)) {
     throw new Error('Valid departmentId is required');
+  }
+
+  // Verify Organization is active and not archived/deleted
+  const org = await Organization.findOne({ _id: organizationId, isDeleted: { $ne: true } });
+  if (!org || org.status === 'INACTIVE') {
+    throw new Error('Organization not found or is archived/inactive');
+  }
+
+  // Idempotency: Return existing ticket if duplicate request with same idempotencyKey
+  if (idempotencyKey && typeof idempotencyKey === 'string' && idempotencyKey.trim()) {
+    const existingTicket = await Ticket.findOne({ idempotencyKey: idempotencyKey.trim() })
+      .populate('currentDepartmentId')
+      .populate('organizationId');
+    if (existingTicket) {
+      return {
+        ticket: existingTicket,
+        ticketNumber: existingTicket.ticketNumber,
+        trackingToken: existingTicket.trackingToken,
+        position: existingTicket.position,
+        estimatedWaitMin: 0,
+        department: existingTicket.currentDepartmentId,
+        isIdempotent: true
+      };
+    }
   }
 
   const dept = await Department.findOne({ _id: departmentId, orgId: organizationId });
@@ -62,6 +86,9 @@ async function issueTicket({ organizationId, departmentId, serviceId, priority =
   const resolvedRoomNumber = roomNumber || dept.roomNumber || '';
   const resolvedTargetRoomId = dept.roomNumber ? dept._id : null;
 
+  const normalizedPriority = ['NORMAL', 'URGENT', 'EMERGENCY'].includes(priority) ? priority : 'NORMAL';
+  const priorityWeight = normalizedPriority === 'EMERGENCY' ? 3 : normalizedPriority === 'URGENT' ? 2 : 1;
+
   const ticket = await Ticket.create({
     ticketNumber,
     organizationId,
@@ -69,7 +96,10 @@ async function issueTicket({ organizationId, departmentId, serviceId, priority =
     currentServiceId: serviceId && isValidObjectId(serviceId) ? serviceId : null,
     targetRoomId: resolvedTargetRoomId,
     roomNumber: resolvedRoomNumber,
-    priority: ['NORMAL', 'URGENT', 'EMERGENCY'].includes(priority) ? priority : 'NORMAL',
+    priority: normalizedPriority,
+    priorityWeight,
+    source: ['KIOSK', 'WEB', 'MOBILE', 'WALK_IN'].includes(source) ? source : 'WEB',
+    idempotencyKey: idempotencyKey ? idempotencyKey.trim() : undefined,
     status: 'WAITING',
     position,
     history: [{
@@ -86,7 +116,7 @@ async function issueTicket({ organizationId, departmentId, serviceId, priority =
     ticketId: ticket._id,
     departmentId,
     eventType: 'TICKET_CREATED',
-    metadata: { source, priority, ticketNumber }
+    metadata: { source, priority: normalizedPriority, ticketNumber }
   });
 
   // Calculate live ETA
@@ -101,6 +131,7 @@ async function issueTicket({ organizationId, departmentId, serviceId, priority =
   const payload = {
     ticket,
     ticketNumber: ticket.ticketNumber,
+    trackingToken: ticket.trackingToken,
     orgId: organizationId.toString(),
     deptId: departmentId.toString(),
     departmentName: dept.name,
@@ -117,6 +148,7 @@ async function issueTicket({ organizationId, departmentId, serviceId, priority =
   return {
     ticket,
     ticketNumber: ticket.ticketNumber,
+    trackingToken: ticket.trackingToken,
     position,
     estimatedWaitMin,
     department: dept
@@ -190,7 +222,7 @@ async function callNextTicket({ organizationId, departmentId, counterId, workerI
       }
     },
     {
-      sort: { priority: -1, createdAt: 1 },
+      sort: { priorityWeight: -1, createdAt: 1 },
       returnDocument: 'after'
     }
   );

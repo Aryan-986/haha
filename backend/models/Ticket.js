@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const crypto = require('crypto');
 
 const departmentTransitionSchema = new mongoose.Schema({
   deptId: {
@@ -30,6 +31,23 @@ const ticketSchema = new mongoose.Schema({
     type: String,
     required: true,
     index: true
+  },
+  trackingToken: {
+    type: String,
+    unique: true,
+    sparse: true,
+    default: () => crypto.randomBytes(16).toString('hex'),
+    index: true
+  },
+  idempotencyKey: {
+    type: String,
+    sparse: true,
+    index: true
+  },
+  source: {
+    type: String,
+    enum: ['KIOSK', 'WEB', 'MOBILE', 'WALK_IN'],
+    default: 'WEB'
   },
   organizationId: {
     type: mongoose.Schema.Types.ObjectId,
@@ -97,6 +115,11 @@ const ticketSchema = new mongoose.Schema({
     default: 'NORMAL',
     index: true
   },
+  priorityWeight: {
+    type: Number,
+    default: 1,
+    index: true
+  },
   position: {
     type: Number,
     default: 1
@@ -153,7 +176,15 @@ ticketSchema.virtual('positionInQueue')
   .get(function() { return this.position; })
   .set(function(v) { this.position = v; });
 
+// Pre-save hook to ensure priorityWeight is in sync
+ticketSchema.pre('save', function() {
+  if (this.priority === 'EMERGENCY') this.priorityWeight = 3;
+  else if (this.priority === 'URGENT') this.priorityWeight = 2;
+  else this.priorityWeight = 1;
+});
+
 // Composite indexes for queue ordering queries (organization + department + status + priority)
+ticketSchema.index({ organizationId: 1, currentDepartmentId: 1, status: 1, priorityWeight: -1, createdAt: 1 });
 ticketSchema.index({ organizationId: 1, currentDepartmentId: 1, status: 1, priority: -1, createdAt: 1 });
 ticketSchema.index({ organizationId: 1, currentDepartmentId: 1, status: 1 });
 ticketSchema.index({ organizationId: 1, status: 1 });

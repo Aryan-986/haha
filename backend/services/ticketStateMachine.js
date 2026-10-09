@@ -23,6 +23,7 @@ const ALLOWED_TRANSITIONS = {
  */
 function isValidTransition(fromStatus, toStatus) {
   if (!fromStatus || !toStatus) return false;
+  if (['COMPLETED', 'CANCELLED'].includes(fromStatus)) return false;
   if (fromStatus === toStatus) return true;
   const allowed = ALLOWED_TRANSITIONS[fromStatus] || [];
   return allowed.includes(toStatus);
