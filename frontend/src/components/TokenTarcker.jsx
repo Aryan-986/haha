@@ -1,8 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import axios from 'axios';
 import { playNotificationChime } from '../utils/alertSound';
-
-const API_BASE = 'http://localhost:5000/api';
+import apiClient from '../services/apiClient';
 
 export default function TokenTracker({ serviceId }) {
   const [tokenInput, setTokenInput] = useState('');
@@ -13,7 +11,7 @@ export default function TokenTracker({ serviceId }) {
   const fetchStatus = async () => {
     if (!serviceId) return;
     try {
-      const res = await axios.get(`${API_BASE}/queue/${serviceId}`);
+      const res = await apiClient.get(`/queue/${serviceId}`);
       setQueueInfo(res.data);
     } catch (err) {
       console.error('Queue sync error:', err);

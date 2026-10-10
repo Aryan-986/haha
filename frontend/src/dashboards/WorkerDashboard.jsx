@@ -1,14 +1,12 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import axios from 'axios';
-import { io } from 'socket.io-client';
 import { 
   Play, CheckCircle2, PhoneForwarded, Bell, SkipForward, UserX, Clock, 
   Coffee, RefreshCw, AlertCircle, ArrowRightLeft, Users, Monitor
 } from 'lucide-react';
+import apiClient from '../services/apiClient';
+import { getOrganizations, getDepartments } from '../services/organizationService';
+import { getSocket, onSocketReconnect } from '../services/socket';
 import KioskHardwareSimulator from '../components/KioskHardwareSimulator';
-
-const API = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000/api/v1';
-const SOCKET_URL = 'http://localhost:5000';
 
 const PRIORITY_BADGE = {
   NORMAL: 'bg-neutral-100 text-neutral-700 border-neutral-200',
@@ -40,6 +38,10 @@ export default function WorkerDashboard() {
   const [waitingTickets, setWaitingTickets] = useState([]);
   const [waitingCount, setWaitingCount] = useState(0);
   const [targetDeptId, setTargetDeptId] = useState('');
+  const [targetCounters, setTargetCounters] = useState([]);
+  const [targetCounterId, setTargetCounterId] = useState('');
+  const [transferReason, setTransferReason] = useState('');
+  const [loadingTargetCounters, setLoadingTargetCounters] = useState(false);
   const [snoozeMinutes, setSnoozeMinutes] = useState(5);
 
   const [loading, setLoading] = useState(true);
@@ -50,56 +52,10 @@ export default function WorkerDashboard() {
   const socketRef = useRef(null);
   const prevScopeRef = useRef({ orgId: '', deptId: '' });
 
-  // ── Socket.IO ──────────────────────────────────────────────────
-  useEffect(() => {
-    const socket = io(SOCKET_URL, { transports: ['websocket', 'polling'], reconnectionAttempts: 10 });
-    socketRef.current = socket;
-
-    socket.on('ticket.called', (p) => { if (p.deptId === deptId) fetchCurrent(); });
-    socket.on('ticket.started', (p) => { if (p.deptId === deptId) fetchCurrent(); });
-    socket.on('ticket.completed', (p) => { if (p.deptId === deptId) { setCurrentTicket(null); fetchCurrent(); } });
-    socket.on('ticket.transferred', (p) => { if (p.fromDeptId === deptId || p.deptId === deptId) fetchCurrent(); });
-    socket.on('ticket.recalled', (p) => { if (p.deptId === deptId && p.ticket) setCurrentTicket(p.ticket); });
-    socket.on('queue.updated', (p) => { if (p.deptId === deptId || p.orgId === orgId) fetchCurrent(); });
-    socket.on('counter.updated', (p) => { if (p.deptId === deptId) fetchCounters(); });
-    socket.on('worker.updated', (p) => { if (p.workerId === workerId) fetchCurrent(); });
-
-    return () => socket.disconnect();
-  }, [deptId, orgId, workerId]);
-
-  // Room subscription
-  useEffect(() => {
-    const socket = socketRef.current;
-    if (!socket) return;
-    const prev = prevScopeRef.current;
-    socket.emit('switch_scope', { oldOrgId: prev.orgId, oldDeptId: prev.deptId, newOrgId: orgId, newDeptId: deptId });
-    prevScopeRef.current = { orgId, deptId };
-  }, [orgId, deptId]);
-
   // ── Data fetching ──────────────────────────────────────────────
-  useEffect(() => {
-    axios.get(`${API}/orgs`).then(r => {
-      if (r.data?.length > 0) { setOrgs(r.data); setOrgId(r.data[0]._id); }
-    }).catch(console.error).finally(() => setLoading(false));
-  }, []);
-
-  useEffect(() => {
-    if (!orgId) return;
-    setCurrentTicket(null); setWaitingCount(0); setDeptId(''); setCounterId(''); setWorkerId('');
-    Promise.all([
-      axios.get(`${API}/orgs/${orgId}/departments`),
-      axios.get(`${API}/worker/workers?orgId=${orgId}`)
-    ]).then(([dr, wr]) => {
-      const d = dr.data || []; setDepts(d);
-      if (d.length > 0) setDeptId(d[0]._id);
-      const w = wr.data?.workers || []; setWorkers(w);
-      if (w.length > 0) setWorkerId(w[0]._id);
-    }).catch(console.error);
-  }, [orgId]);
-
   const fetchCounters = useCallback(() => {
     if (!deptId || !orgId) return;
-    axios.get(`${API}/counters?organizationId=${orgId}&departmentId=${deptId}`)
+    apiClient.get(`/counters?organizationId=${orgId}&departmentId=${deptId}`)
       .then(r => {
         const c = r.data?.counters || []; setCounters(c);
         if (c.length > 0 && !counterId) setCounterId(c[0]._id);
@@ -108,13 +64,119 @@ export default function WorkerDashboard() {
 
   const fetchCurrent = useCallback(() => {
     if (!deptId) return;
-    axios.get(`${API}/worker/department/${deptId}/current`)
+    apiClient.get(`/worker/department/${deptId}/current`)
       .then(r => {
         setCurrentTicket(r.data?.ticket || null);
         setWaitingCount(r.data?.waitingCount || 0);
         setWaitingTickets(r.data?.waitingTickets || []);
       }).catch(console.error);
   }, [deptId]);
+
+  // ── Shared Socket.IO ───────────────────────────────────────────
+  useEffect(() => {
+    const socket = getSocket();
+    socketRef.current = socket;
+
+    const onTicketCalled = (p) => { if (p.deptId === deptId) fetchCurrent(); };
+    const onTicketStarted = (p) => { if (p.deptId === deptId) fetchCurrent(); };
+    const onTicketCompleted = (p) => { if (p.deptId === deptId) { setCurrentTicket(null); fetchCurrent(); } };
+    const onTicketTransferred = (p) => { if (p.fromDeptId === deptId || p.deptId === deptId) fetchCurrent(); };
+    const onTicketRecalled = (p) => { if (p.deptId === deptId && p.ticket) setCurrentTicket(p.ticket); };
+    const onQueueUpdated = (p) => { if (p.deptId === deptId || p.orgId === orgId) fetchCurrent(); };
+    const onCounterUpdated = (p) => { if (p.deptId === deptId) fetchCounters(); };
+    const onWorkerUpdated = (p) => { if (p.workerId === workerId) fetchCurrent(); };
+
+    socket.on('ticket.called', onTicketCalled);
+    socket.on('ticket.started', onTicketStarted);
+    socket.on('ticket.completed', onTicketCompleted);
+    socket.on('ticket.transferred', onTicketTransferred);
+    socket.on('ticket.recalled', onTicketRecalled);
+    socket.on('queue.updated', onQueueUpdated);
+    socket.on('counter.updated', onCounterUpdated);
+    socket.on('worker.updated', onWorkerUpdated);
+
+    const unregReconnect = onSocketReconnect(() => {
+      fetchCurrent();
+      fetchCounters();
+    });
+
+    return () => {
+      unregReconnect();
+      socket.off('ticket.called', onTicketCalled);
+      socket.off('ticket.started', onTicketStarted);
+      socket.off('ticket.completed', onTicketCompleted);
+      socket.off('ticket.transferred', onTicketTransferred);
+      socket.off('ticket.recalled', onTicketRecalled);
+      socket.off('queue.updated', onQueueUpdated);
+      socket.off('counter.updated', onCounterUpdated);
+      socket.off('worker.updated', onWorkerUpdated);
+    };
+  }, [deptId, orgId, workerId, fetchCurrent, fetchCounters]);
+
+  // Room scope subscription
+  useEffect(() => {
+    const socket = getSocket();
+    const prev = prevScopeRef.current;
+    if (prev.orgId !== orgId || prev.deptId !== deptId) {
+      socket.emit('switch_scope', { oldOrgId: prev.orgId, oldDeptId: prev.deptId, newOrgId: orgId, newDeptId: deptId });
+      prevScopeRef.current = { orgId, deptId };
+    }
+  }, [orgId, deptId]);
+
+  useEffect(() => {
+    // 1. Fetch worker profile if authenticated to pre-select their assigned scope
+    apiClient.get('/worker/me').then(meRes => {
+      if (meRes.data?.worker) {
+        const w = meRes.data.worker;
+        if (w.organizationId?._id) setOrgId(w.organizationId._id);
+        if (w.departmentId?._id) setDeptId(w.departmentId._id);
+        if (w.counterId?._id) setCounterId(w.counterId._id);
+        setWorkerId(w._id);
+      }
+    }).catch(() => {
+      // Unassigned or dev mode - fallback to org list
+    });
+
+    // 2. Authoritative organization list
+    getOrganizations().then(orgList => {
+      if (Array.isArray(orgList) && orgList.length > 0) {
+        setOrgs(orgList);
+        setOrgId(prev => prev || orgList[0]._id);
+      }
+    }).catch(console.error).finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    if (!orgId) return;
+    setCurrentTicket(null); setWaitingCount(0); setDeptId(''); setCounterId(''); setWorkerId('');
+    Promise.all([
+      getDepartments(orgId),
+      apiClient.get(`/worker/workers?orgId=${orgId}`)
+    ]).then(([d, wr]) => {
+      setDepts(d || []);
+      if (d && d.length > 0) setDeptId(d[0]._id);
+      const w = wr.data?.workers || []; setWorkers(w);
+      if (w.length > 0) setWorkerId(w[0]._id);
+    }).catch(console.error);
+  }, [orgId]);
+
+  // Load destination counters when destination department is selected for transfer
+  useEffect(() => {
+    if (!targetDeptId || !orgId) {
+      setTargetCounters([]);
+      setTargetCounterId('');
+      setLoadingTargetCounters(false);
+      return;
+    }
+    setLoadingTargetCounters(true);
+    apiClient.get(`/counters?organizationId=${orgId}&departmentId=${targetDeptId}`)
+      .then(r => {
+        setTargetCounters(r.data?.counters || []);
+        setTargetCounterId('');
+      })
+      .catch(console.error)
+      .finally(() => setLoadingTargetCounters(false));
+  }, [targetDeptId, orgId]);
 
   useEffect(() => {
     fetchCounters(); fetchCurrent();
@@ -148,7 +210,7 @@ export default function WorkerDashboard() {
 
   const handleCallNext = () => action('Call Next', async () => {
     if (!deptId) return;
-    const r = await axios.post(`${API}/worker/department/${deptId}/call-next`, { orgId, counterId, workerId });
+    const r = await apiClient.post(`/worker/department/${deptId}/call-next`, { orgId, counterId, workerId });
     if (r.data?.ticket) {
       setCurrentTicket(r.data.ticket);
       setStatusMsg({ text: `Ticket called: ${r.data.ticketNumber}`, type: 'success' });
@@ -159,30 +221,38 @@ export default function WorkerDashboard() {
 
   const handleStart = () => action('Start Service', async () => {
     if (!currentTicket) return;
-    const r = await axios.post(`${API}/worker/tokens/start`, { ticketId: currentTicket._id, workerId, counterId });
+    const r = await apiClient.post('/worker/tokens/start', { ticketId: currentTicket._id, workerId, counterId });
     setCurrentTicket(r.data.ticket);
     setStatusMsg({ text: `Service started for ${r.data.ticket?.ticketNumber}`, type: 'success' });
   });
 
   const handleComplete = () => action('Complete Service', async () => {
     if (!currentTicket) return;
-    await axios.post(`${API}/worker/tokens/complete`, { ticketId: currentTicket._id, workerId, counterId });
+    await apiClient.post('/worker/tokens/complete', { ticketId: currentTicket._id, workerId, counterId });
     setCurrentTicket(null);
     setStatusMsg({ text: 'Service completed successfully. Ready for next ticket.', type: 'success' });
   });
 
   const handleTransfer = () => action('Transfer Ticket', async () => {
     if (!currentTicket || !targetDeptId) return;
-    const r = await axios.post(`${API}/worker/tokens/transfer`, {
-      ticketId: currentTicket._id, targetDeptId, workerId, counterId
+    const r = await apiClient.post('/worker/tokens/transfer', {
+      ticketId: currentTicket._id,
+      targetDeptId,
+      targetCounterId: targetCounterId || undefined,
+      workerId,
+      counterId,
+      reason: transferReason.trim() || undefined
     });
-    setCurrentTicket(null); setTargetDeptId('');
+    setCurrentTicket(null);
+    setTargetDeptId('');
+    setTargetCounterId('');
+    setTransferReason('');
     setStatusMsg({ text: r.data?.message || 'Ticket transferred to next department.', type: 'success' });
   });
 
   const handleSnooze = () => action('Snooze Ticket', async () => {
     if (!currentTicket) return;
-    await axios.post(`${API}/worker/tokens/snooze`, {
+    await apiClient.post('/worker/tokens/snooze', {
       ticketId: currentTicket._id, minutes: snoozeMinutes, workerId
     });
     setCurrentTicket(null);
@@ -191,36 +261,36 @@ export default function WorkerDashboard() {
 
   const handleSkip = () => action('Skip Ticket', async () => {
     if (!currentTicket) return;
-    await axios.post(`${API}/worker/tokens/skip`, { ticketId: currentTicket._id, workerId, counterId });
+    await apiClient.post('/worker/tokens/skip', { ticketId: currentTicket._id, workerId, counterId });
     setCurrentTicket(null);
     setStatusMsg({ text: 'Ticket skipped and returned to queue.', type: 'info' });
   });
 
   const handleNoShow = () => action('Mark No Show', async () => {
     if (!currentTicket) return;
-    await axios.post(`${API}/worker/tokens/no-show`, { ticketId: currentTicket._id, workerId, counterId });
+    await apiClient.post('/worker/tokens/no-show', { ticketId: currentTicket._id, workerId, counterId });
     setCurrentTicket(null);
     setStatusMsg({ text: 'Ticket marked as No Show.', type: 'info' });
   });
 
   const handleRecall = () => action('Recall Citizen', async () => {
     if (!currentTicket) return;
-    await axios.post(`${API}/worker/tokens/recall`, { ticketId: currentTicket._id, workerId, counterId });
+    await apiClient.post('/worker/tokens/recall', { ticketId: currentTicket._id, workerId, counterId });
     setStatusMsg({ text: `Citizen recalled for ticket ${currentTicket.ticketNumber}.`, type: 'success' });
   });
 
   const handleBreak = async () => {
     try {
       if (isBreak) {
-        await axios.post(`${API}/worker/break-end`, { workerId, organizationId: orgId });
+        await apiClient.post('/worker/break-end', { workerId, organizationId: orgId });
         setIsBreak(false);
         setStatusMsg({ text: 'Break ended. Counter is ready.', type: 'success' });
       } else {
-        await axios.post(`${API}/worker/break`, { workerId, organizationId: orgId });
+        await apiClient.post('/worker/break', { workerId, organizationId: orgId });
         setIsBreak(true);
         setStatusMsg({ text: 'Break started. Queue calling is paused.', type: 'info' });
       }
-      const wr = await axios.get(`${API}/worker/workers?orgId=${orgId}`);
+      const wr = await apiClient.get(`/worker/workers?orgId=${orgId}`);
       setWorkers(wr.data?.workers || []);
       fetchCounters();
     } catch (err) {
@@ -479,18 +549,33 @@ export default function WorkerDashboard() {
 
         {waitingTickets.length > 0 ? (
           <div className="divide-y divide-neutral-100">
-            {waitingTickets.slice(0, 5).map((t, idx) => (
-              <div key={t._id} className="py-2.5 flex items-center justify-between text-xs">
-                <div className="flex items-center gap-3">
-                  <span className="w-6 text-neutral-400 font-mono font-medium">{idx + 1}.</span>
-                  <span className="font-mono font-bold text-neutral-900 text-sm">{t.ticketNumber}</span>
-                  <span className={`px-2 py-0.5 rounded-full text-[11px] font-semibold border ${PRIORITY_BADGE[t.priority]}`}>
-                    {t.priority}
-                  </span>
+            {waitingTickets.slice(0, 5).map((t, idx) => {
+              const isLongWait = t.createdAt && (Date.now() - new Date(t.createdAt)) > 15 * 60 * 1000;
+              const isSnoozed = t.status === 'SNOOZED';
+
+              return (
+                <div key={t._id} className="py-2.5 flex items-center justify-between text-xs">
+                  <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
+                    <span className="w-5 text-neutral-400 font-mono font-medium">{idx + 1}.</span>
+                    <span className="font-mono font-bold text-neutral-900 text-sm">{t.ticketNumber}</span>
+                    <span className={`px-2 py-0.5 rounded-full text-[11px] font-semibold border ${PRIORITY_BADGE[t.priority] || ''}`}>
+                      {t.priority}
+                    </span>
+                    {isSnoozed && (
+                      <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold border bg-blue-50 text-blue-800 border-blue-200">
+                        Snoozed
+                      </span>
+                    )}
+                    {isLongWait && (
+                      <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold border bg-amber-50 text-amber-800 border-amber-200">
+                        Wait &gt; 15m
+                      </span>
+                    )}
+                  </div>
+                  <span className="text-neutral-500 shrink-0">{timeAgo(t.createdAt)}</span>
                 </div>
-                <span className="text-neutral-500">{timeAgo(t.createdAt)}</span>
-              </div>
-            ))}
+              );
+            })}
           </div>
         ) : (
           <div className="py-6 text-center text-xs text-neutral-500">
@@ -509,7 +594,7 @@ export default function WorkerDashboard() {
             <button 
               onClick={handleRecall} 
               disabled={!canOperate || busy || !isCalled}
-              className="py-2 px-3 bg-white border border-neutral-200 hover:bg-neutral-100 disabled:opacity-40 text-neutral-800 text-xs font-medium rounded-lg transition inline-flex items-center justify-center gap-1.5"
+              className="py-2 px-3 bg-white border border-neutral-200 hover:bg-neutral-100 disabled:opacity-40 text-neutral-800 text-xs font-medium rounded-lg transition inline-flex items-center justify-center gap-1.5 cursor-pointer"
             >
               <Bell className="w-3.5 h-3.5 text-neutral-600" />
               <span>Recall</span>
@@ -518,7 +603,7 @@ export default function WorkerDashboard() {
             <button 
               onClick={handleSkip} 
               disabled={!canOperate || busy || !isCalled}
-              className="py-2 px-3 bg-white border border-neutral-200 hover:bg-neutral-100 disabled:opacity-40 text-neutral-800 text-xs font-medium rounded-lg transition inline-flex items-center justify-center gap-1.5"
+              className="py-2 px-3 bg-white border border-neutral-200 hover:bg-neutral-100 disabled:opacity-40 text-neutral-800 text-xs font-medium rounded-lg transition inline-flex items-center justify-center gap-1.5 cursor-pointer"
             >
               <SkipForward className="w-3.5 h-3.5 text-neutral-600" />
               <span>Skip</span>
@@ -527,7 +612,7 @@ export default function WorkerDashboard() {
             <button 
               onClick={handleNoShow} 
               disabled={!canOperate || busy || !isCalled}
-              className="py-2 px-3 bg-white border border-neutral-200 hover:bg-neutral-100 disabled:opacity-40 text-rose-700 hover:text-rose-800 text-xs font-medium rounded-lg transition inline-flex items-center justify-center gap-1.5"
+              className="py-2 px-3 bg-white border border-neutral-200 hover:bg-neutral-100 disabled:opacity-40 text-rose-700 hover:text-rose-800 text-xs font-medium rounded-lg transition inline-flex items-center justify-center gap-1.5 cursor-pointer"
             >
               <UserX className="w-3.5 h-3.5 text-rose-600" />
               <span>No Show</span>
@@ -541,7 +626,7 @@ export default function WorkerDashboard() {
               <button 
                 key={m} 
                 onClick={() => setSnoozeMinutes(m)}
-                className={`px-2.5 py-1 rounded-md text-xs font-semibold transition border ${
+                className={`px-2.5 py-1 rounded-md text-xs font-semibold transition border cursor-pointer ${
                   snoozeMinutes === m 
                     ? 'bg-neutral-800 text-white border-neutral-800' 
                     : 'bg-white text-neutral-700 border-neutral-200 hover:bg-neutral-100'
@@ -553,36 +638,105 @@ export default function WorkerDashboard() {
             <button 
               onClick={handleSnooze} 
               disabled={!canOperate || busy}
-              className="ml-auto px-3 py-1 bg-white border border-neutral-200 hover:bg-neutral-100 disabled:opacity-40 text-neutral-800 text-xs font-medium rounded-lg transition inline-flex items-center gap-1"
+              className="ml-auto px-3 py-1 bg-white border border-neutral-200 hover:bg-neutral-100 disabled:opacity-40 text-neutral-800 text-xs font-medium rounded-lg transition inline-flex items-center gap-1 cursor-pointer"
             >
               <Clock className="w-3.5 h-3.5 text-neutral-600" />
               <span>Snooze {snoozeMinutes}m</span>
             </button>
           </div>
 
-          {/* Transfer control */}
-          <div className="pt-2 border-t border-neutral-200/60 space-y-2">
-            <label className="block text-xs font-semibold text-neutral-600">Transfer Ticket to Another Department</label>
-            <div className="flex gap-2">
-              <select 
-                value={targetDeptId} 
-                onChange={e => setTargetDeptId(e.target.value)}
-                className="flex-1 bg-white border border-neutral-200 text-xs rounded-lg p-2 text-neutral-900 focus:outline-none focus:ring-1 focus:ring-emerald-700"
-              >
-                <option value="">— Select destination department —</option>
-                {depts.filter(d => d._id !== deptId).map(d => (
-                  <option key={d._id} value={d._id}>
-                    {d.name} ({d.prefix}){d.roomNumber ? ` · Room ${d.roomNumber}` : ''}
-                  </option>
-                ))}
-              </select>
+          {/* Transfer control with destination department and counter/room selection */}
+          <div className="pt-2 border-t border-neutral-200/60 space-y-3">
+            <div className="flex items-center justify-between">
+              <label className="block text-xs font-bold text-neutral-800 uppercase tracking-wider">
+                Multi-Stage Ticket Transfer
+              </label>
+              <span className="text-[11px] text-neutral-500 font-mono">
+                Preserves token #{currentTicket.ticketNumber}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              <div>
+                <label className="block text-[11px] text-neutral-600 mb-1 font-semibold">
+                  1. Destination Department <span className="text-red-500">*</span>
+                </label>
+                <select 
+                  value={targetDeptId} 
+                  onChange={e => {
+                    setTargetDeptId(e.target.value);
+                    setTargetCounterId('');
+                  }}
+                  disabled={busy}
+                  className="w-full bg-white border border-neutral-200 text-xs rounded-lg p-2 text-neutral-900 focus:outline-none focus:ring-1 focus:ring-emerald-700"
+                >
+                  <option value="">— Select destination department —</option>
+                  {depts.filter(d => d._id !== deptId).map(d => (
+                    <option key={d._id} value={d._id}>
+                      {d.name} ({d.prefix}){d.roomNumber ? ` · Room ${d.roomNumber}` : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[11px] text-neutral-600 mb-1 font-semibold">
+                  2. Destination Counter / Room {loadingTargetCounters ? '(Loading...)' : '(Optional)'}
+                </label>
+                <select 
+                  value={targetCounterId} 
+                  onChange={e => setTargetCounterId(e.target.value)}
+                  disabled={!targetDeptId || busy || loadingTargetCounters}
+                  className="w-full bg-white border border-neutral-200 disabled:bg-neutral-50 disabled:text-neutral-400 text-xs rounded-lg p-2 text-neutral-900 focus:outline-none focus:ring-1 focus:ring-emerald-700"
+                >
+                  <option value="">General Queue (Any available counter)</option>
+                  {targetCounters.map(c => (
+                    <option key={c._id} value={c._id}>
+                      {c.name || `Counter ${c.counterNumber}`}{c.roomNumber ? ` · Room ${c.roomNumber}` : ''} ({c.status})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-[11px] text-neutral-600 mb-1 font-semibold">
+                3. Transfer Reason / Service Note (Optional)
+              </label>
+              <input
+                type="text"
+                value={transferReason}
+                onChange={e => setTransferReason(e.target.value)}
+                disabled={busy}
+                placeholder="e.g. Stage completed, proceed to document verification"
+                className="w-full bg-white border border-neutral-200 text-xs rounded-lg p-2 text-neutral-900 focus:outline-none focus:ring-1 focus:ring-emerald-700"
+              />
+            </div>
+
+            {/* Destination Review Summary Banner */}
+            {targetDeptId && (
+              <div className="p-2.5 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-900 text-xs flex items-center justify-between gap-2">
+                <div>
+                  <span className="font-bold">Destination Summary:</span> Transferring <strong>{currentTicket.ticketNumber}</strong> from{' '}
+                  <strong>{activeDept?.name}</strong> to{' '}
+                  <strong>{depts.find(d => d._id === targetDeptId)?.name}</strong>
+                  {targetCounterId ? (
+                    <span> at <strong>{targetCounters.find(c => c._id === targetCounterId)?.name || 'Selected Counter'}</strong>{targetCounters.find(c => c._id === targetCounterId)?.roomNumber ? ` (Room ${targetCounters.find(c => c._id === targetCounterId)?.roomNumber})` : ''}</span>
+                  ) : (
+                    <span> (General Waiting Queue)</span>
+                  )}
+                </div>
+              </div>
+            )}
+
+            <div className="flex justify-end pt-1">
               <button 
                 onClick={handleTransfer} 
                 disabled={!targetDeptId || !canOperate || busy}
-                className="px-4 py-2 bg-emerald-700 hover:bg-emerald-800 disabled:opacity-40 text-white text-xs font-semibold rounded-lg transition inline-flex items-center gap-1.5"
+                className="px-4 py-2 bg-emerald-700 hover:bg-emerald-800 disabled:opacity-40 text-white text-xs font-semibold rounded-lg transition inline-flex items-center gap-1.5 cursor-pointer shadow-xs"
               >
-                <ArrowRightLeft className="w-3.5 h-3.5" />
-                <span>Transfer</span>
+                {busy ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <ArrowRightLeft className="w-3.5 h-3.5" />}
+                <span>{busy ? 'Transferring...' : 'Confirm Transfer'}</span>
               </button>
             </div>
           </div>

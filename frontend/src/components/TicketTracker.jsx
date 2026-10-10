@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import axios from 'axios';
 import { 
   AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer 
 } from 'recharts';
@@ -8,8 +7,8 @@ import {
   Sparkles, Bell, Trash2, Volume2, VolumeX, Plus, BellOff, Check, UserCheck, FastForward 
 } from 'lucide-react';
 import { getTicketDetails, trackTicketByToken } from '../services/citizenService';
+import apiClient from '../services/apiClient';
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000/api';
 const LOCAL_STORAGE_KEY = 'queueless_active_token';
 const ALARMS_STORAGE_KEY = 'queueless_custom_alarms';
 
@@ -214,7 +213,7 @@ const TicketTracker = ({ onBack }) => {
         }
       }
 
-      const res = await axios.get(`${API_BASE}/services`);
+      const res = await apiClient.get('/worker/services');
       if (isMounted && res.data && res.data.length > 0) {
         setService(res.data[0]);
       }

@@ -278,7 +278,7 @@ router.get('/department/:departmentId/current', async (req, res) => {
 // POST /api/v1/worker/tokens/transfer
 router.post('/tokens/transfer', async (req, res) => {
   try {
-    const { ticketId, ticketNumber, targetDeptId, workerId, counterId } = req.body;
+    const { ticketId, ticketNumber, targetDeptId, targetCounterId, workerId, counterId, reason, transferReason } = req.body;
 
     if (!targetDeptId || !isValidObjectId(targetDeptId)) {
       return res.status(400).json({ error: 'Valid targetDeptId is required' });
@@ -300,17 +300,21 @@ router.post('/tokens/transfer', async (req, res) => {
     const result = await queueService.transferTicket({
       ticketId: resolvedTicketId,
       targetDepartmentId: targetDeptId,
+      targetCounterId,
       workerId,
-      counterId
+      counterId,
+      reason: reason || transferReason
     });
 
-    const targetRoomStr = result.targetDepartment?.roomNumber ? ` [Room ${result.targetDepartment.roomNumber}]` : '';
+    const targetRoomStr = result.ticket.roomNumber ? ` [Room ${result.ticket.roomNumber}]` : '';
+    const targetCounterStr = result.targetCounter ? ` · ${result.targetCounter.name || `Counter ${result.targetCounter.counterNumber}`}` : '';
 
     return res.json({
       success: true,
-      message: `Ticket ${result.ticket.ticketNumber} transferred to ${result.targetDepartment.name}${targetRoomStr}`,
+      message: `Ticket ${result.ticket.ticketNumber} transferred to ${result.targetDepartment.name}${targetCounterStr}${targetRoomStr}`,
       ticket: result.ticket,
       targetDepartment: result.targetDepartment,
+      targetCounter: result.targetCounter,
       positionInQueue: result.positionInQueue
     });
   } catch (err) {

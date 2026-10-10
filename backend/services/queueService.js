@@ -403,9 +403,9 @@ async function completeService({ ticketId, workerId, counterId }) {
 }
 
 /**
- * Transfer a ticket to a downstream Department
+ * Transfer a ticket to a downstream Department and optional destination Counter/Room
  */
-async function transferTicket({ ticketId, targetDepartmentId, workerId, counterId }) {
+async function transferTicket({ ticketId, targetDepartmentId, targetCounterId, workerId, counterId, reason }) {
   if (!isValidObjectId(ticketId)) throw new Error('Valid ticketId is required');
   if (!isValidObjectId(targetDepartmentId)) throw new Error('Valid targetDepartmentId is required');
 
@@ -413,11 +413,63 @@ async function transferTicket({ ticketId, targetDepartmentId, workerId, counterI
   if (!ticket) throw new Error('Ticket not found');
 
   const targetDept = await Department.findById(targetDepartmentId);
-  if (!targetDept) throw new Error('Target department not found');
+  if (!targetDept) {
+    const err = new Error('Target department not found');
+    err.status = 404;
+    throw err;
+  }
+
+  if (['COMPLETED', 'CANCELLED'].includes(ticket.status)) {
+    const err = new Error(`Cannot transfer ticket in '${ticket.status}' status`);
+    err.status = 400;
+    err.code = 'INVALID_STATE_TRANSITION';
+    throw err;
+  }
+
+  // Validate worker authorization if workerId provided
+  if (workerId && isValidObjectId(workerId)) {
+    const worker = await Worker.findById(workerId);
+    if (!worker || worker.organizationId.toString() !== ticket.organizationId.toString()) {
+      const err = new Error('Unauthorized: Worker cannot transfer ticket belonging to another organization');
+      err.status = 403;
+      throw err;
+    }
+  }
 
   // Enforce Tenant Boundary: Ticket and target Department must share organizationId
   if (ticket.organizationId.toString() !== targetDept.orgId.toString()) {
-    throw new Error('Tenant Boundary Error: Cannot transfer ticket across different organizations');
+    const err = new Error('Tenant Boundary Error: Cannot transfer ticket across different organizations');
+    err.status = 403;
+    throw err;
+  }
+
+  // Ensure organization is active and not archived
+  const Organization = require('../models/Organization');
+  const org = await Organization.findOne({ _id: ticket.organizationId, isDeleted: { $ne: true } });
+  if (!org || org.status !== 'ACTIVE') {
+    const err = new Error('Cannot transfer ticket: Destination organization is archived or inactive');
+    err.status = 400;
+    throw err;
+  }
+
+  // Optional destination counter/room validation
+  let targetCounter = null;
+  if (targetCounterId) {
+    if (!isValidObjectId(targetCounterId)) {
+      const err = new Error('Invalid target counter ID format');
+      err.status = 400;
+      throw err;
+    }
+    targetCounter = await Counter.findOne({
+      _id: targetCounterId,
+      departmentId: targetDept._id,
+      organizationId: ticket.organizationId
+    });
+    if (!targetCounter) {
+      const err = new Error('Target counter does not exist in destination department or organization');
+      err.status = 400;
+      throw err;
+    }
   }
 
   assertValidTransition(ticket.status, 'TRANSFERRED');
@@ -426,8 +478,9 @@ async function transferTicket({ ticketId, targetDepartmentId, workerId, counterI
 
   ticket.status = 'TRANSFERRED';
   ticket.currentDepartmentId = targetDept._id;
-  ticket.targetRoomId = targetDept.roomNumber ? targetDept._id : null;
-  ticket.roomNumber = targetDept.roomNumber || '';
+  ticket.targetRoomId = targetCounter?.roomNumber ? targetCounter._id : (targetDept.roomNumber ? targetDept._id : null);
+  ticket.roomNumber = targetCounter?.roomNumber || targetDept.roomNumber || '';
+  ticket.targetCounterId = targetCounter ? targetCounter._id : null;
   ticket.currentCounterId = null;
   ticket.currentWorkerId = null;
 
@@ -441,7 +494,10 @@ async function transferTicket({ ticketId, targetDepartmentId, workerId, counterI
   ticket.transferInfo = {
     fromDepartmentId: fromDeptId,
     toDepartmentId: targetDept._id,
+    targetCounterId: targetCounter ? targetCounter._id : null,
+    targetCounterName: targetCounter ? (targetCounter.name || `Counter ${targetCounter.counterNumber}`) : null,
     transferredBy: workerId ? workerId.toString() : 'Staff Transfer',
+    reason: reason || 'Routine Multi-Stage Transfer',
     transferredAt: new Date()
   };
 
@@ -449,8 +505,8 @@ async function transferTicket({ ticketId, targetDepartmentId, workerId, counterI
     deptId: targetDept._id,
     timestamp: new Date(),
     servedBy: workerId ? workerId.toString() : 'Staff Transfer',
-    counterId: counterId || null,
-    action: `TRANSFERRED_FROM_${fromDeptId}`
+    counterId: targetCounter ? targetCounter._id : (counterId || null),
+    action: targetCounter ? `TRANSFERRED_TO_COUNTER_${targetCounter.counterNumber}` : `TRANSFERRED_FROM_${fromDeptId}`
   });
 
   await ticket.save();
@@ -467,13 +523,19 @@ async function transferTicket({ ticketId, targetDepartmentId, workerId, counterI
     organizationId: ticket.organizationId,
     ticketId: ticket._id,
     departmentId: targetDept._id,
-    counterId: counterId || null,
+    counterId: targetCounter ? targetCounter._id : (counterId || null),
     workerId: workerId && isValidObjectId(workerId) ? workerId : null,
+    destinationRoomNumber: ticket.roomNumber || '',
     eventType: 'TICKET_TRANSFERRED',
     metadata: {
       fromDepartmentId: fromDeptId,
       toDepartmentId: targetDept._id,
-      targetDepartmentName: targetDept.name
+      targetDepartmentName: targetDept.name,
+      targetCounterId: targetCounter ? targetCounter._id : null,
+      targetCounterName: targetCounter ? (targetCounter.name || `Counter ${targetCounter.counterNumber}`) : null,
+      destinationRoomNumber: ticket.roomNumber || '',
+      roomNumber: ticket.roomNumber,
+      reason: reason || 'Routine Multi-Stage Transfer'
     }
   });
 
@@ -485,7 +547,9 @@ async function transferTicket({ ticketId, targetDepartmentId, workerId, counterI
     deptId: targetDept._id.toString(),
     targetDeptId: targetDept._id.toString(),
     targetDeptName: targetDept.name,
-    roomNumber: targetDept.roomNumber || '',
+    targetCounterId: targetCounter ? targetCounter._id.toString() : null,
+    targetCounterName: targetCounter ? (targetCounter.name || `Counter ${targetCounter.counterNumber}`) : null,
+    roomNumber: ticket.roomNumber || '',
     event: 'ticket.transferred'
   };
 
@@ -496,6 +560,7 @@ async function transferTicket({ ticketId, targetDepartmentId, workerId, counterI
   return {
     ticket,
     targetDepartment: targetDept,
+    targetCounter,
     positionInQueue: ticket.position
   };
 }
@@ -521,7 +586,8 @@ async function snoozeTicket({ ticketId, minutes = 5, workerId, source = 'WORKER'
     snoozeCount: (ticket.snoozeInfo?.snoozeCount || 0) + 1,
     resumePosition: (ticket.position || 1) + Math.ceil(minutes / 2),
     resumeAt,
-    source
+    source,
+    isSnoozed: true
   };
   // Free the counter
   ticket.currentCounterId = null;
@@ -914,6 +980,7 @@ module.exports = {
   generateAtomicTicketNumber,
   issueTicket,
   callNextTicket,
+  callNext: callNextTicket,
   startService,
   completeService,
   transferTicket,

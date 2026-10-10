@@ -7,6 +7,22 @@ const organizationSchema = new mongoose.Schema({
     required: true,
     trim: true
   },
+  code: {
+    type: String,
+    trim: true,
+    uppercase: true,
+    index: true
+  },
+  description: {
+    type: String,
+    trim: true,
+    default: ''
+  },
+  timezone: {
+    type: String,
+    trim: true,
+    default: 'UTC'
+  },
   type: {
     type: String,
     required: true,

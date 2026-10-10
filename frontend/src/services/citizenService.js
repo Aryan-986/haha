@@ -1,12 +1,10 @@
-import axios from 'axios';
-
-const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000';
+import { apiClient } from './apiClient';
 
 /**
  * Fetch all active organizations for citizens
  */
 export async function getCitizenOrganizations() {
-  const response = await axios.get(`${API_BASE}/api/v1/orgs`);
+  const response = await apiClient.get('/api/v1/orgs');
   return response.data || [];
 }
 
@@ -15,7 +13,7 @@ export async function getCitizenOrganizations() {
  */
 export async function getCitizenDepartments(orgId) {
   if (!orgId) return [];
-  const response = await axios.get(`${API_BASE}/api/v1/orgs/${orgId}/departments`);
+  const response = await apiClient.get(`/api/v1/orgs/${orgId}/departments`);
   return response.data || [];
 }
 
@@ -36,8 +34,8 @@ export async function issueCitizenTicket({
     headers['Idempotency-Key'] = idempotencyKey;
   }
 
-  const response = await axios.post(
-    `${API_BASE}/api/v1/tickets`,
+  const response = await apiClient.post(
+    '/api/v1/tickets',
     {
       organizationId,
       departmentId,
@@ -57,7 +55,7 @@ export async function issueCitizenTicket({
  * Fetch ticket details by ID or ticketNumber
  */
 export async function getTicketDetails(ticketIdOrNumber) {
-  const response = await axios.get(`${API_BASE}/api/v1/tickets/${encodeURIComponent(ticketIdOrNumber)}`);
+  const response = await apiClient.get(`/api/v1/tickets/${encodeURIComponent(ticketIdOrNumber)}`);
   return response.data;
 }
 
@@ -65,7 +63,7 @@ export async function getTicketDetails(ticketIdOrNumber) {
  * Track ticket anonymously using secure tracking token
  */
 export async function trackTicketByToken(trackingToken) {
-  const response = await axios.get(`${API_BASE}/api/v1/tickets/track/${encodeURIComponent(trackingToken)}`);
+  const response = await apiClient.get(`/api/v1/tickets/track/${encodeURIComponent(trackingToken)}`);
   return response.data;
 }
 
@@ -73,7 +71,7 @@ export async function trackTicketByToken(trackingToken) {
  * Fetch live priority-aware queue position
  */
 export async function getTicketPosition(ticketId) {
-  const response = await axios.get(`${API_BASE}/api/v1/tickets/${ticketId}/position`);
+  const response = await apiClient.get(`/api/v1/tickets/${ticketId}/position`);
   return response.data;
 }
 
@@ -81,7 +79,18 @@ export async function getTicketPosition(ticketId) {
  * Fetch live queue ETA
  */
 export async function getTicketETA(ticketId) {
-  const response = await axios.get(`${API_BASE}/api/v1/tickets/${ticketId}/eta`);
+  const response = await apiClient.get(`/api/v1/tickets/${ticketId}/eta`);
+  return response.data;
+}
+
+/**
+ * Snooze / delay ticket by specified minutes (citizen delay request)
+ */
+export async function snoozeCitizenTicket(ticketId, minutes = 5) {
+  const response = await apiClient.post(`/api/v1/tickets/${ticketId}/snooze`, {
+    minutes,
+    source: 'CITIZEN'
+  });
   return response.data;
 }
 
@@ -89,7 +98,7 @@ export async function getTicketETA(ticketId) {
  * Fetch multi-department journey stages
  */
 export async function getTicketJourney(ticketId) {
-  const response = await axios.get(`${API_BASE}/api/v1/tickets/${ticketId}/journey`);
+  const response = await apiClient.get(`/api/v1/tickets/${ticketId}/journey`);
   return response.data;
 }
 
@@ -97,7 +106,7 @@ export async function getTicketJourney(ticketId) {
  * Fetch QueueEvent timeline (safe audit trail)
  */
 export async function getTicketEvents(ticketId) {
-  const response = await axios.get(`${API_BASE}/api/v1/tickets/${ticketId}/events`);
+  const response = await apiClient.get(`/api/v1/tickets/${ticketId}/events`);
   return response.data?.events || [];
 }
 
@@ -109,6 +118,7 @@ export default {
   trackTicketByToken,
   getTicketPosition,
   getTicketETA,
+  snoozeCitizenTicket,
   getTicketJourney,
   getTicketEvents
 };

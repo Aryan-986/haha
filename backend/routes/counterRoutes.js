@@ -59,11 +59,11 @@ router.get('/:id', async (req, res) => {
 // POST /api/v1/counters - Create counter
 router.post('/', async (req, res) => {
   try {
-    const { organizationId, departmentId, counterNumber, name } = req.body;
+    const { organizationId, departmentId, counterNumber, name, roomNumber } = req.body;
     if (!organizationId || !departmentId || !counterNumber) {
       return res.status(400).json({ success: false, error: 'organizationId, departmentId, and counterNumber are required' });
     }
-    const counter = await counterService.createCounter({ organizationId, departmentId, counterNumber, name });
+    const counter = await counterService.createCounter({ organizationId, departmentId, counterNumber, name, roomNumber });
     res.status(201).json({ success: true, counter });
   } catch (err) {
     console.error('Error in POST /counters:', err);
@@ -71,13 +71,14 @@ router.post('/', async (req, res) => {
   }
 });
 
-// PATCH /api/v1/counters/:id - Update counter name/number
+// PATCH /api/v1/counters/:id - Update counter name/number/roomNumber
 router.patch('/:id', async (req, res) => {
   try {
-    const { name, counterNumber } = req.body;
+    const { name, counterNumber, roomNumber } = req.body;
     const updates = {};
     if (name) updates.name = name;
     if (counterNumber) updates.counterNumber = Number(counterNumber);
+    if (roomNumber !== undefined) updates.roomNumber = String(roomNumber).trim();
 
     const counter = await Counter.findByIdAndUpdate(req.params.id, updates, { returnDocument: 'after' });
     if (!counter) return res.status(404).json({ success: false, error: 'Counter not found' });

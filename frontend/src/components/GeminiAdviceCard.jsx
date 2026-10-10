@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import axios from 'axios';
 import { Sparkles, FileText, CheckCircle2, Loader2 } from 'lucide-react';
+import apiClient from '../services/apiClient';
 
 export default function GeminiAdviceCard({ serviceId, currentQueue, bestTimeWindow }) {
   const [advice, setAdvice] = useState('');
@@ -15,7 +15,7 @@ export default function GeminiAdviceCard({ serviceId, currentQueue, bestTimeWind
       if (currentQueue !== undefined) payload.currentQueue = currentQueue;
       if (bestTimeWindow) payload.bestTimeWindow = bestTimeWindow;
 
-      const res = await axios.post('http://localhost:5000/api/analyze', payload);
+      const res = await apiClient.post('/analyze', payload);
       setAdvice(res.data.advice);
       setDocuments(res.data.documents || []);
     } catch (err) {

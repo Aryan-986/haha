@@ -1,13 +1,11 @@
-import axios from 'axios';
-
-const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000';
+import { apiClient } from './apiClient';
 
 /**
  * Issue a new token for an organization/department
  * @param {Object} payload - { orgId, deptId }
  */
 export async function issueToken(payload) {
-  const response = await axios.post(`${API_BASE}/api/v1/tokens/issue`, payload);
+  const response = await apiClient.post('/api/v1/tokens/issue', payload);
   return response.data;
 }
 
@@ -16,16 +14,16 @@ export async function issueToken(payload) {
  * @param {string} ticketId - MongoDB ObjectId or ticketNumber string
  */
 export async function trackToken(ticketId) {
-  const response = await axios.get(`${API_BASE}/api/v1/tokens/track/${ticketId}`);
+  const response = await apiClient.get(`/api/v1/tokens/track/${ticketId}`);
   return response.data;
 }
 
 /**
  * Transfer a ticket to a target department
- * @param {Object} payload - { ticketId, targetDeptId, workerId }
+ * @param {Object} payload - { ticketId, targetDeptId, targetCounterId, workerId, counterId }
  */
 export async function transferToken(payload) {
-  const response = await axios.post(`${API_BASE}/api/v1/tokens/transfer`, payload);
+  const response = await apiClient.post('/api/v1/tokens/transfer', payload);
   return response.data;
 }
 

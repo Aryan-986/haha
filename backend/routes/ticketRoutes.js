@@ -237,10 +237,11 @@ router.post('/:id/complete', async (req, res) => {
 router.post('/:id/transfer', async (req, res) => {
   try {
     const { id } = req.params;
-    const { targetDepartmentId, workerId, counterId } = req.body;
+    const { targetDepartmentId, targetCounterId, workerId, counterId } = req.body;
     const result = await queueService.transferTicket({
       ticketId: id,
       targetDepartmentId,
+      targetCounterId,
       workerId,
       counterId
     });

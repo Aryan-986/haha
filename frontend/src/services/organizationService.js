@@ -1,13 +1,11 @@
-import axios from 'axios';
-
-const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000';
+import { apiClient } from './apiClient';
 
 /**
  * Fetch all registered organizations
  * @param {Object} [params] - Optional query params like { type, status }
  */
 export async function getOrganizations(params = {}) {
-  const response = await axios.get(`${API_BASE}/api/v1/orgs`, { params });
+  const response = await apiClient.get('/api/v1/orgs', { params });
   return response.data;
 }
 
@@ -16,7 +14,17 @@ export async function getOrganizations(params = {}) {
  * @param {Object} orgData - { name, type, address }
  */
 export async function createOrganization(orgData) {
-  const response = await axios.post(`${API_BASE}/api/v1/orgs`, orgData);
+  const response = await apiClient.post('/api/v1/orgs', orgData);
+  return response.data;
+}
+
+/**
+ * Update an existing organization
+ * @param {string} orgId - Organization MongoDB ID
+ * @param {Object} orgData - { name, type, address, status }
+ */
+export async function updateOrganization(orgId, orgData) {
+  const response = await apiClient.put(`/api/v1/orgs/${orgId}`, orgData);
   return response.data;
 }
 
@@ -25,17 +33,17 @@ export async function createOrganization(orgData) {
  * @param {string} orgId - Organization MongoDB ID
  */
 export async function getDepartments(orgId) {
-  const response = await axios.get(`${API_BASE}/api/v1/orgs/${orgId}/departments`);
+  const response = await apiClient.get(`/api/v1/orgs/${orgId}/departments`);
   return response.data;
 }
 
 /**
  * Create a dynamic department under an organization
  * @param {string} orgId - Organization MongoDB ID
- * @param {Object} deptData - { name, prefix, avgServiceTimeMins, subCounters, isEntryLevel }
+ * @param {Object} deptData - { name, prefix, avgServiceTimeMins, subCounters, isEntryLevel, roomNumber }
  */
 export async function createDepartment(orgId, deptData) {
-  const response = await axios.post(`${API_BASE}/api/v1/orgs/${orgId}/departments`, deptData);
+  const response = await apiClient.post(`/api/v1/orgs/${orgId}/departments`, deptData);
   return response.data;
 }
 
@@ -44,13 +52,14 @@ export async function createDepartment(orgId, deptData) {
  * @param {string} orgId - Organization MongoDB ID
  */
 export async function deleteOrganization(orgId) {
-  const response = await axios.delete(`${API_BASE}/api/v1/orgs/${orgId}`);
+  const response = await apiClient.delete(`/api/v1/orgs/${orgId}`);
   return response.data;
 }
 
 export default {
   getOrganizations,
   createOrganization,
+  updateOrganization,
   getDepartments,
   createDepartment,
   deleteOrganization

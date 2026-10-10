@@ -12,19 +12,46 @@ const { emitQueueEvent } = require('../socket');
 
 const isValidObjectId = (id) => mongoose.Types.ObjectId.isValid(id);
 
+const Organization = require('../models/Organization');
+const Department = require('../models/Department');
+
 /**
  * Create a new counter in a department
  */
-async function createCounter({ organizationId, departmentId, counterNumber, name }) {
+async function createCounter({ organizationId, departmentId, counterNumber, name, roomNumber }) {
   if (!isValidObjectId(organizationId)) throw new Error('Valid organizationId is required');
   if (!isValidObjectId(departmentId)) throw new Error('Valid departmentId is required');
   if (!counterNumber) throw new Error('counterNumber is required');
+
+  const org = await Organization.findOne({ _id: organizationId, isDeleted: { $ne: true } });
+  if (!org) {
+    const err = new Error('Organization not found or is archived');
+    err.status = 404;
+    throw err;
+  }
+
+  const dept = await Department.findOne({ _id: departmentId, orgId: organizationId });
+  if (!dept) {
+    const err = new Error('Department not found or does not belong to the specified organization');
+    err.status = 404;
+    throw err;
+  }
+
+  const existing = await Counter.findOne({ departmentId, counterNumber: Number(counterNumber) });
+  if (existing) {
+    const err = new Error(`Counter ${counterNumber} already exists in this department`);
+    err.status = 400;
+    throw err;
+  }
+
+  const resolvedRoom = roomNumber ? String(roomNumber).trim() : (dept.roomNumber || '');
 
   const counter = await Counter.create({
     organizationId,
     departmentId,
     counterNumber: Number(counterNumber),
     name: name || `Counter ${counterNumber}`,
+    roomNumber: resolvedRoom,
     status: 'OFFLINE',
     isActive: false
   });

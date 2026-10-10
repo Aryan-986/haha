@@ -79,7 +79,7 @@ router.get('/:id/counters', async (req, res) => {
 router.post('/:id/counters', async (req, res) => {
   try {
     const { id } = req.params;
-    const { counterNumber, name, organizationId } = req.body;
+    const { counterNumber, name, organizationId, roomNumber } = req.body;
     if (!isValidObjectId(id)) return res.status(400).json({ error: 'Invalid department ID' });
 
     const dept = await Department.findById(id);
@@ -89,7 +89,8 @@ router.post('/:id/counters', async (req, res) => {
       organizationId: organizationId || dept.orgId,
       departmentId: id,
       counterNumber: Number(counterNumber) || 1,
-      name: name || `Counter ${counterNumber || 1}`
+      name: name || `Counter ${counterNumber || 1}`,
+      roomNumber: roomNumber !== undefined ? roomNumber : dept.roomNumber
     });
 
     res.status(201).json({ success: true, counter });

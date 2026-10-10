@@ -141,7 +141,8 @@ const ticketSchema = new mongoose.Schema({
     snoozeCount: { type: Number, default: 0 },
     resumePosition: { type: Number, default: 0 },
     resumeAt: { type: Date, default: null, index: true },
-    source: { type: String, default: 'WORKER' }
+    source: { type: String, default: 'WORKER' },
+    isSnoozed: { type: Boolean, default: false }
   },
   transferInfo: {
     fromDepartmentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Department', default: null },

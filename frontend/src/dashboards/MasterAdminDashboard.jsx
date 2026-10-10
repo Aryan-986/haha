@@ -19,11 +19,13 @@ import {
   Sparkles,
   Trash2,
   AlertTriangle,
-  FolderTree
+  FolderTree,
+  Edit
 } from 'lucide-react';
 import {
   getOrganizations,
   createOrganization,
+  updateOrganization,
   getDepartments,
   createDepartment,
   deleteOrganization
@@ -39,6 +41,7 @@ export default function MasterAdminDashboard() {
 
   // Modals state
   const [isOrgModalOpen, setIsOrgModalOpen] = useState(false);
+  const [editingOrg, setEditingOrg] = useState(null);
   const [isDeptModalOpen, setIsDeptModalOpen] = useState(false);
   const [targetOrgForDept, setTargetOrgForDept] = useState(null);
 
@@ -46,7 +49,8 @@ export default function MasterAdminDashboard() {
   const [orgForm, setOrgForm] = useState({
     name: '',
     type: 'GOVERNMENT',
-    address: ''
+    address: '',
+    status: 'ACTIVE'
   });
   const [deptForm, setDeptForm] = useState({
     name: '',
@@ -58,6 +62,7 @@ export default function MasterAdminDashboard() {
   });
 
   const [formSubmitting, setFormSubmitting] = useState(false);
+  const [orgModalError, setOrgModalError] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
 
@@ -65,31 +70,54 @@ export default function MasterAdminDashboard() {
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [orgToDelete, setOrgToDelete] = useState(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteModalError, setDeleteModalError] = useState('');
 
   const handleDeleteOrgConfirm = async () => {
     if (!orgToDelete) return;
     try {
       setIsDeleting(true);
+      setDeleteModalError('');
       setErrorMessage('');
       await deleteOrganization(orgToDelete._id);
-      setOrganizations((prev) => prev.filter((o) => o._id !== orgToDelete._id));
-      setDepartmentsByOrg((prev) => {
-        const next = { ...prev };
-        delete next[orgToDelete._id];
-        return next;
-      });
+      await fetchInitialData();
       if (expandedOrgId === orgToDelete._id) {
         setExpandedOrgId(null);
       }
-      setSuccessMessage(`Organization "${orgToDelete.name}" has been deleted/archived successfully.`);
+      setSuccessMessage(`Organization "${orgToDelete.name}" has been archived successfully.`);
       setIsDeleteModalOpen(false);
       setOrgToDelete(null);
     } catch (err) {
       console.error('Failed to delete organization:', err);
-      setErrorMessage(err.response?.data?.error || err.message || 'Failed to delete organization');
+      let errMsg = err.response?.data?.error || err.message || 'Failed to archive organization';
+      if (err.response?.status === 401) {
+        errMsg = 'Authentication required: Please sign in as a Master Admin to archive organizations.';
+      } else if (err.response?.status === 403) {
+        errMsg = 'Forbidden: Only Master Admin accounts have permission to archive organizations.';
+      }
+      setDeleteModalError(errMsg);
+      setErrorMessage(errMsg);
     } finally {
       setIsDeleting(false);
     }
+  };
+
+  const handleOpenCreateOrgModal = () => {
+    setEditingOrg(null);
+    setOrgForm({ name: '', type: 'GOVERNMENT', address: '', status: 'ACTIVE' });
+    setOrgModalError('');
+    setIsOrgModalOpen(true);
+  };
+
+  const handleOpenEditOrgModal = (org) => {
+    setEditingOrg(org);
+    setOrgForm({
+      name: org.name || '',
+      type: org.type || 'GOVERNMENT',
+      address: org.address || '',
+      status: org.status || 'ACTIVE'
+    });
+    setOrgModalError('');
+    setIsOrgModalOpen(true);
   };
 
   useEffect(() => {
@@ -157,28 +185,39 @@ export default function MasterAdminDashboard() {
     setTimeout(() => setCopiedKeyId(null), 2500);
   };
 
-  const handleCreateOrgSubmit = async (e) => {
+  const handleSaveOrgSubmit = async (e) => {
     e.preventDefault();
-    if (!orgForm.name.trim()) return;
+    if (!orgForm.name.trim()) {
+      setOrgModalError('Organization name is required');
+      return;
+    }
 
     try {
       setFormSubmitting(true);
+      setOrgModalError('');
       setErrorMessage('');
 
-      const res = await createOrganization(orgForm);
-      const newOrg = res.organization || res;
-
-      setOrganizations((prev) => [newOrg, ...prev]);
-      setDepartmentsByOrg((prev) => ({ ...prev, [newOrg._id]: [] }));
-      setExpandedOrgId(newOrg._id);
-
-      setOrgForm({ name: '', type: 'GOVERNMENT', address: '' });
-      setIsOrgModalOpen(false);
-      setSuccessMessage(`Organization "${newOrg.name}" created successfully!`);
+      if (editingOrg) {
+        const res = await updateOrganization(editingOrg._id, orgForm);
+        const updatedOrg = res.organization || res;
+        await fetchInitialData();
+        setIsOrgModalOpen(false);
+        setEditingOrg(null);
+        setSuccessMessage(`Organization "${updatedOrg.name}" updated successfully!`);
+      } else {
+        const res = await createOrganization(orgForm);
+        const newOrg = res.organization || res;
+        await fetchInitialData();
+        setExpandedOrgId(newOrg._id);
+        setIsOrgModalOpen(false);
+        setSuccessMessage(`Organization "${newOrg.name}" created successfully!`);
+      }
       setTimeout(() => setSuccessMessage(''), 4000);
     } catch (err) {
-      console.error('Error creating organization:', err);
-      setErrorMessage(err.response?.data?.error || err.message || 'Failed to create organization');
+      console.error('Error saving organization:', err);
+      const errMsg = err.response?.data?.error || err.message || 'Failed to save organization';
+      setOrgModalError(errMsg);
+      setErrorMessage(errMsg);
     } finally {
       setFormSubmitting(false);
     }
@@ -301,10 +340,7 @@ export default function MasterAdminDashboard() {
           </button>
 
           <button
-            onClick={() => {
-              setErrorMessage('');
-              setIsOrgModalOpen(true);
-            }}
+            onClick={handleOpenCreateOrgModal}
             className="flex items-center gap-1.5 bg-emerald-700 hover:bg-emerald-800 active:bg-emerald-900 text-white text-xs font-bold py-2.5 px-4 rounded-lg transition shadow-sm"
           >
             <PlusCircle className="w-4 h-4" />
@@ -461,10 +497,21 @@ export default function MasterAdminDashboard() {
                       {isExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
                     </button>
 
+                    {/* Edit */}
+                    <button
+                      onClick={() => handleOpenEditOrgModal(org)}
+                      className="inline-flex items-center gap-1 bg-white hover:bg-neutral-100 text-neutral-800 text-xs font-semibold px-3 py-1.5 rounded-lg border border-neutral-200 transition"
+                      title="Edit Organization Details"
+                    >
+                      <Edit className="w-3.5 h-3.5 text-neutral-600" />
+                      <span>Edit</span>
+                    </button>
+
                     {/* Delete / Archive */}
                     <button
                       onClick={() => {
                         setOrgToDelete(org);
+                        setDeleteModalError('');
                         setIsDeleteModalOpen(true);
                       }}
                       className="inline-flex items-center gap-1 bg-white hover:bg-rose-50 text-rose-700 text-xs font-semibold px-3 py-1.5 rounded-lg border border-rose-200 transition"
@@ -531,18 +578,33 @@ export default function MasterAdminDashboard() {
         </div>
       )}
 
-      {/* ── Modal: Create Organization ── */}
+      {/* ── Modal: Create / Edit Organization ── */}
       {isOrgModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-xs">
           <div className="bg-white border border-neutral-200 rounded-xl max-w-md w-full p-6 shadow-xl space-y-4">
             <div className="flex items-center justify-between pb-2 border-b border-neutral-100">
-              <h3 className="font-bold text-base text-neutral-900">Create New Organization</h3>
-              <button onClick={() => setIsOrgModalOpen(false)} className="text-neutral-400 hover:text-neutral-600">
+              <h3 className="font-bold text-base text-neutral-900">
+                {editingOrg ? 'Edit Organization' : 'Create New Organization'}
+              </h3>
+              <button
+                onClick={() => {
+                  setIsOrgModalOpen(false);
+                  setEditingOrg(null);
+                }}
+                className="text-neutral-400 hover:text-neutral-600"
+              >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <form onSubmit={handleCreateOrgSubmit} className="space-y-3">
+            {orgModalError && (
+              <div className="p-3 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-rose-700 shrink-0" />
+                <span>{orgModalError}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleSaveOrgSubmit} className="space-y-3">
               <div>
                 <label className="block text-xs font-semibold text-neutral-700 mb-1">Organization Name *</label>
                 <input
@@ -579,10 +641,28 @@ export default function MasterAdminDashboard() {
                 />
               </div>
 
+              {editingOrg && (
+                <div>
+                  <label className="block text-xs font-semibold text-neutral-700 mb-1">Status</label>
+                  <select
+                    value={orgForm.status}
+                    onChange={(e) => setOrgForm({ ...orgForm, status: e.target.value })}
+                    className="w-full bg-white border border-neutral-200 rounded-lg px-3 py-2 text-xs text-neutral-900 focus:outline-none focus:ring-1 focus:ring-emerald-700"
+                  >
+                    <option value="ACTIVE">ACTIVE</option>
+                    <option value="INACTIVE">INACTIVE</option>
+                    <option value="SUSPENDED">SUSPENDED</option>
+                  </select>
+                </div>
+              )}
+
               <div className="pt-3 flex justify-end gap-2 border-t border-neutral-100">
                 <button
                   type="button"
-                  onClick={() => setIsOrgModalOpen(false)}
+                  onClick={() => {
+                    setIsOrgModalOpen(false);
+                    setEditingOrg(null);
+                  }}
                   className="px-4 py-2 text-xs font-medium text-neutral-600 hover:bg-neutral-100 rounded-lg transition"
                 >
                   Cancel
@@ -592,7 +672,9 @@ export default function MasterAdminDashboard() {
                   disabled={formSubmitting}
                   className="px-4 py-2 bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 text-white text-xs font-bold rounded-lg transition"
                 >
-                  {formSubmitting ? 'Creating...' : 'Create Organization'}
+                  {formSubmitting
+                    ? (editingOrg ? 'Saving...' : 'Creating...')
+                    : (editingOrg ? 'Save Changes' : 'Create Organization')}
                 </button>
               </div>
             </form>
@@ -714,6 +796,13 @@ export default function MasterAdminDashboard() {
             <p className="text-xs text-neutral-600 leading-relaxed">
               Are you sure you want to archive/delete <strong>"{orgToDelete.name}"</strong>? This will safely mark the organization as deleted and prevent new tickets from being created.
             </p>
+
+            {deleteModalError && (
+              <div className="p-3 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-rose-700 shrink-0" />
+                <span>{deleteModalError}</span>
+              </div>
+            )}
 
             <div className="pt-3 flex justify-end gap-2 border-t border-neutral-100">
               <button

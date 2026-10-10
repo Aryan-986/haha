@@ -64,9 +64,12 @@ const departmentRoutes = require('./routes/departmentRoutes');
 const counterRoutes = require('./routes/counterRoutes');
 
 app.use('/api', queueRoutes);
+app.use('/api/v1', queueRoutes);
 app.use('/api/v1/worker', workerRoutes);
+app.use('/api/worker', workerRoutes);
 app.use('/api/v1/orgs', organizationRoutes);
 app.use('/api/orgs', organizationRoutes);
+app.use('/orgs', organizationRoutes);
 app.use('/api/v1/tickets', ticketRoutes);
 app.use('/api/tickets', ticketRoutes);
 app.use('/api/v1/departments', departmentRoutes);
@@ -74,9 +77,9 @@ app.use('/api/departments', departmentRoutes);
 app.use('/api/v1/counters', counterRoutes);
 app.use('/api/counters', counterRoutes);
 
-if (require('fs').existsSync('./routes/adminRoutes.js')) {
-  app.use('/api/admin', require('./routes/adminRoutes'));
-}
+const adminRoutes = require('./routes/adminRoutes');
+app.use('/api/v1/admin', adminRoutes);
+app.use('/api/admin', adminRoutes);
 
 // Global 404 Route Handler
 app.use((req, res) => {

@@ -85,17 +85,69 @@ router.get('/:orgId', async (req, res) => {
   }
 });
 
-const { archiveOrganization } = require('../services/organizationService');
+const { archiveOrganization, updateOrganization } = require('../services/organizationService');
+const { resolveUserRole } = require('../middleware/authMiddleware');
+
+// Helper to reliably extract authenticated user role and ID from request
+const getAuthUser = async (req) => {
+  const userId = req.auth?.userId;
+  const userRole = await resolveUserRole(req);
+  return { userId, userRole };
+};
+
+// PUT /api/v1/orgs/:orgId - Update an organization (Master Admin only)
+router.put('/:orgId', async (req, res) => {
+  try {
+    const { orgId } = req.params;
+    const { userId, userRole } = await getAuthUser(req);
+
+    // If Clerk is active and request lacks authenticated session
+    if (process.env.CLERK_SECRET_KEY && !userId && process.env.NODE_ENV !== 'test') {
+      return res.status(401).json({ error: 'Unauthorized: Authentication required. Please sign in as Master Admin.' });
+    }
+
+    if (!userRole) {
+      return res.status(401).json({ error: 'Unauthorized: Authentication required. Please sign in as Master Admin.' });
+    }
+
+    const normalizedRole = (userRole || '').toLowerCase();
+    if (normalizedRole !== 'master_admin') {
+      return res.status(403).json({ error: 'Forbidden: Only Master Admin can edit organizations' });
+    }
+
+    const org = await updateOrganization(orgId, req.body, { userRole, userId });
+
+    res.json({
+      success: true,
+      message: `Organization "${org.name}" updated successfully`,
+      organization: org
+    });
+  } catch (err) {
+    console.error('ERROR in PUT /api/v1/orgs/:orgId:', err.message);
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
 
 // DELETE /api/v1/orgs/:orgId - Soft-delete (archive) an organization
-// Requires MASTER_ADMIN role (verified via Clerk session claims)
+// Requires MASTER_ADMIN role (verified via Clerk session claims or SDK)
 router.delete('/:orgId', async (req, res) => {
   try {
     const { orgId } = req.params;
+    const { userId, userRole } = await getAuthUser(req);
 
-    // Verify MASTER_ADMIN role from Clerk session or authenticated context
-    const userRole = req.auth?.sessionClaims?.metadata?.role;
-    const userId = req.auth?.userId;
+    // If Clerk is active and request lacks authenticated session
+    if (process.env.CLERK_SECRET_KEY && !userId && process.env.NODE_ENV !== 'test') {
+      return res.status(401).json({ error: 'Unauthorized: Authentication required. Please sign in as Master Admin.' });
+    }
+
+    if (!userRole) {
+      return res.status(401).json({ error: 'Unauthorized: Authentication required. Please sign in as Master Admin.' });
+    }
+
+    const normalizedRole = (userRole || '').toLowerCase();
+    if (normalizedRole !== 'master_admin') {
+      return res.status(403).json({ error: 'Forbidden: Only Master Admin can delete organizations' });
+    }
 
     const org = await archiveOrganization(orgId, { userRole, userId });
 

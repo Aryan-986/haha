@@ -29,6 +29,10 @@ const queueEventSchema = new mongoose.Schema({
     ref: 'Counter',
     default: null
   },
+  destinationRoomNumber: {
+    type: String,
+    default: ''
+  },
   eventType: {
     type: String,
     enum: [

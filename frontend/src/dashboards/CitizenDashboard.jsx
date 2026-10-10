@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { io } from 'socket.io-client';
 import {
   Ticket,
   Clock,
@@ -16,7 +15,10 @@ import {
   MapPin,
   Building2,
   Calendar,
-  X
+  X,
+  FastForward,
+  Wifi,
+  WifiOff
 } from 'lucide-react';
 import {
   getCitizenOrganizations,
@@ -26,15 +28,19 @@ import {
   trackTicketByToken,
   getTicketPosition,
   getTicketETA,
+  snoozeCitizenTicket,
   getTicketJourney,
   getTicketEvents
 } from '../services/citizenService';
+import { getSocket, onSocketReconnect, onSocketStatusChange } from '../services/socket';
 
-const SOCKET_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000';
 const STORAGE_KEY = 'queueless_citizen_active_ticket';
 
 export default function CitizenDashboard() {
   const [activeTab, setActiveTab] = useState('create'); // 'create' | 'ticket' | 'track'
+  const [connectionError, setConnectionError] = useState(null);
+  const [socketStatus, setSocketStatus] = useState('connected');
+  const [delayLoading, setDelayLoading] = useState(false);
 
   // Organizations and Departments
   const [organizations, setOrganizations] = useState([]);
@@ -67,67 +73,7 @@ export default function CitizenDashboard() {
   const ticketRef = useRef(activeTicket);
   ticketRef.current = activeTicket;
 
-  // 1. Initial Load: Organizations & Persisted Ticket
-  useEffect(() => {
-    async function loadInitial() {
-      try {
-        setLoading(true);
-        const orgs = await getCitizenOrganizations();
-        const activeOrgs = (orgs || []).filter((o) => !o.isDeleted && o.status === 'ACTIVE');
-        setOrganizations(activeOrgs);
-
-        if (activeOrgs.length > 0) {
-          setSelectedOrgId(activeOrgs[0]._id);
-        }
-
-        // Check localStorage for saved ticket
-        const saved = localStorage.getItem(STORAGE_KEY);
-        if (saved) {
-          try {
-            const parsed = JSON.parse(saved);
-            if (parsed.trackingToken || parsed._id) {
-              await loadTicket(parsed.trackingToken || parsed._id);
-              setActiveTab('ticket');
-            }
-          } catch {
-            localStorage.removeItem(STORAGE_KEY);
-          }
-        }
-      } catch (err) {
-        console.error('Failed to load initial citizen data:', err);
-      } finally {
-        setLoading(false);
-      }
-    }
-    loadInitial();
-  }, []);
-
-  // 2. Load Departments when Organization changes
-  useEffect(() => {
-    if (!selectedOrgId) {
-      setDepartments([]);
-      setSelectedDeptId('');
-      return;
-    }
-
-    async function loadDepts() {
-      try {
-        const depts = await getCitizenDepartments(selectedOrgId);
-        setDepartments(depts || []);
-        if (depts && depts.length > 0) {
-          setSelectedDeptId(depts[0]._id);
-        } else {
-          setSelectedDeptId('');
-        }
-      } catch (err) {
-        console.error('Error fetching departments:', err);
-        setDepartments([]);
-      }
-    }
-    loadDepts();
-  }, [selectedOrgId]);
-
-  // 3. Load authoritative ticket data
+  // 1. Authoritative ticket loader (defined first so loadInitial can use it)
   const loadTicket = useCallback(async (idOrToken) => {
     if (!idOrToken) return;
     try {
@@ -181,22 +127,112 @@ export default function CitizenDashboard() {
     }
   }, []);
 
-  // 4. Socket.IO Real-time Subscriptions
+  // 2. Initial Load: Organizations & Persisted Ticket
+  const loadInitial = useCallback(async () => {
+    try {
+      setLoading(true);
+      setConnectionError(null);
+      const orgs = await getCitizenOrganizations();
+      const activeOrgs = (orgs || []).filter((o) => !o.isDeleted && o.status === 'ACTIVE');
+      setOrganizations(activeOrgs);
+
+      if (activeOrgs.length > 0) {
+        setSelectedOrgId((prev) => prev || activeOrgs[0]._id);
+      }
+
+      // Check localStorage for saved ticket
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          if (parsed.trackingToken || parsed._id) {
+            await loadTicket(parsed.trackingToken || parsed._id);
+            setActiveTab('ticket');
+          }
+        } catch {
+          localStorage.removeItem(STORAGE_KEY);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to load initial citizen data:', err);
+      setConnectionError('Unable to connect to QueueLess backend service. Please verify the server is running and retry.');
+    } finally {
+      setLoading(false);
+    }
+  }, [loadTicket]);
+
   useEffect(() => {
-    const socket = io(SOCKET_URL, {
-      transports: ['websocket', 'polling'],
-      reconnectionAttempts: 10
-    });
+    loadInitial();
+  }, [loadInitial]);
+
+  // 3. Load Departments when Organization changes
+  useEffect(() => {
+    if (!selectedOrgId) {
+      setDepartments([]);
+      setSelectedDeptId('');
+      return;
+    }
+
+    async function loadDepts() {
+      try {
+        const depts = await getCitizenDepartments(selectedOrgId);
+        setDepartments(depts || []);
+        if (depts && depts.length > 0) {
+          setSelectedDeptId(depts[0]._id);
+        } else {
+          setSelectedDeptId('');
+        }
+      } catch (err) {
+        console.error('Error fetching departments:', err);
+        setDepartments([]);
+      }
+    }
+    loadDepts();
+  }, [selectedOrgId]);
+
+  // 4. Request ticket snooze / delay
+  const handleRequestDelay = async (minutes = 5) => {
+    if (!activeTicket || delayLoading) return;
+    try {
+      setDelayLoading(true);
+      await snoozeCitizenTicket(activeTicket._id, minutes);
+      await loadTicket(activeTicket._id);
+      setFeedback({
+        type: 'success',
+        text: `Delay requested. Your turn has been delayed by ${minutes} minutes.`
+      });
+    } catch (err) {
+      console.error('Failed to request delay:', err);
+      setFeedback({
+        type: 'error',
+        text: err.response?.data?.error || err.message || 'Failed to request delay'
+      });
+    } finally {
+      setDelayLoading(false);
+    }
+  };
+
+  // 5. Shared Socket.IO Real-time Subscriptions
+  useEffect(() => {
+    const socket = getSocket();
     socketRef.current = socket;
 
-    socket.on('connect', () => {
+    const unregStatus = onSocketStatusChange((status) => {
+      setSocketStatus(status);
+    });
+
+    const unregReconnect = onSocketReconnect(() => {
       if (ticketRef.current) {
-        socket.emit('join_ticket', {
-          ticketId: ticketRef.current._id,
-          trackingToken: ticketRef.current.trackingToken
-        });
+        loadTicket(ticketRef.current._id);
       }
     });
+
+    if (ticketRef.current) {
+      socket.emit('join_ticket', {
+        ticketId: ticketRef.current._id,
+        trackingToken: ticketRef.current.trackingToken
+      });
+    }
 
     const handleUpdate = (payload) => {
       const current = ticketRef.current;
@@ -223,13 +259,15 @@ export default function CitizenDashboard() {
     });
 
     return () => {
-      if (ticketRef.current) {
-        socket.emit('leave_ticket', {
-          ticketId: ticketRef.current._id,
-          trackingToken: ticketRef.current.trackingToken
-        });
-      }
-      socket.disconnect();
+      unregStatus();
+      unregReconnect();
+      socket.off('ticket.called', handleUpdate);
+      socket.off('ticket.started', handleUpdate);
+      socket.off('ticket.completed', handleUpdate);
+      socket.off('ticket.transferred', handleUpdate);
+      socket.off('ticket.snoozed', handleUpdate);
+      socket.off('ticket.resumed', handleUpdate);
+      socket.off('ticket.skipped', handleUpdate);
     };
   }, [loadTicket]);
 
@@ -440,6 +478,25 @@ export default function CitizenDashboard() {
         )}
       </div>
 
+      {/* Connection Error Banner with Retry */}
+      {connectionError && (
+        <div className="p-4 rounded-xl text-xs bg-amber-50 border border-amber-200 text-amber-900 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
+          <div className="flex items-center gap-2">
+            <WifiOff className="w-5 h-5 text-amber-600 shrink-0" />
+            <div>
+              <p className="font-bold">Backend Connection Issue</p>
+              <p className="text-amber-700 text-[11px] mt-0.5">{connectionError}</p>
+            </div>
+          </div>
+          <button
+            onClick={() => loadInitial()}
+            className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-lg cursor-pointer text-xs shrink-0 transition"
+          >
+            Retry Connection
+          </button>
+        </div>
+      )}
+
       {/* Feedback Messages */}
       {feedback && (
         <div
@@ -621,6 +678,24 @@ export default function CitizenDashboard() {
               {getNextInstruction(activeTicket.status)}
             </div>
 
+            {/* Alert: Up Next Alert */}
+            {activeTicket.status === 'WAITING' && peopleAhead <= 3 && peopleAhead > 0 && (
+              <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-300 text-amber-900 text-xs font-semibold flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+                <span>Get Ready! You are up next. Only {peopleAhead} {peopleAhead === 1 ? 'person is' : 'people are'} ahead of you.</span>
+              </div>
+            )}
+
+            {/* Alert: Delayed Ticket / Snoozed Status */}
+            {activeTicket.status === 'SNOOZED' && (
+              <div className="p-3.5 rounded-xl bg-blue-50 border border-blue-300 text-blue-900 text-xs font-semibold flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <Clock className="w-4 h-4 text-blue-600 shrink-0" />
+                  <span>Ticket Delayed: Your turn has been paused temporarily and will be called back soon.</span>
+                </div>
+              </div>
+            )}
+
             {/* People Ahead & Wait Time (Clear and Bold) */}
             <div className="grid grid-cols-2 gap-4 py-2 border-t border-b border-gray-100">
               <div className="text-center">
@@ -670,6 +745,25 @@ export default function CitizenDashboard() {
                 </div>
               )}
             </div>
+
+            {/* Delay Action for Citizens */}
+            {activeTicket.status === 'WAITING' && (
+              <div className="pt-2 flex justify-center border-t border-gray-100">
+                <button
+                  type="button"
+                  onClick={() => handleRequestDelay(5)}
+                  disabled={delayLoading}
+                  className="px-4 py-2 border border-gray-300 hover:border-gray-400 bg-white hover:bg-gray-50 text-gray-700 text-xs font-semibold rounded-xl transition cursor-pointer flex items-center gap-2 shadow-xs"
+                >
+                  {delayLoading ? (
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Clock className="w-3.5 h-3.5 text-gray-500" />
+                  )}
+                  <span>Running Late? Request 5-Min Delay</span>
+                </button>
+              </div>
+            )}
           </div>
 
           {/* ───────────────────────────────────────────────────────── */}

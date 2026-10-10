@@ -1,13 +1,10 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import axios from 'axios';
-import { io } from 'socket.io-client';
 import { 
   Users, PlayCircle, CheckCircle, PauseCircle, Clock, 
   Coffee, RefreshCw, AlertTriangle, Monitor, ArrowRight
 } from 'lucide-react';
-
-const API = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000/api/v1';
-const SOCKET_URL = 'http://localhost:5000';
+import apiClient from '../services/apiClient';
+import { getSocket, onSocketReconnect } from '../services/socket';
 
 const PRIORITY_BADGE = {
   NORMAL: 'bg-neutral-100 text-neutral-700 border-neutral-200',
@@ -44,41 +41,59 @@ export default function SupervisorDashboard() {
   const socketRef = useRef(null);
   const prevScopeRef = useRef({ orgId: '', deptId: '' });
 
-  // ── Socket.IO ──────────────────────────────────────────────────
-  useEffect(() => {
-    const socket = io(SOCKET_URL, { transports: ['websocket', 'polling'] });
-    socketRef.current = socket;
-    socket.on('queue.updated', () => fetchLive());
-    socket.on('ticket.called', () => fetchLive());
-    socket.on('ticket.started', () => fetchLive());
-    socket.on('ticket.completed', () => fetchLive());
-    socket.on('ticket.transferred', () => fetchLive());
-    socket.on('counter.updated', () => fetchLive());
-    socket.on('worker.updated', () => fetchLive());
-    return () => socket.disconnect();
-  }, [deptId, orgId]);
-
-  useEffect(() => {
-    const socket = socketRef.current;
-    if (!socket) return;
-    const prev = prevScopeRef.current;
-    socket.emit('switch_scope', { oldOrgId: prev.orgId, oldDeptId: prev.deptId, newOrgId: orgId, newDeptId: deptId });
-    prevScopeRef.current = { orgId, deptId };
-  }, [orgId, deptId]);
-
   // ── Fetch Live Data ────────────────────────────────────────────
   const fetchLive = useCallback(async () => {
     if (!deptId) return;
     try {
-      const r = await axios.get(`${API}/departments/${deptId}/live?orgId=${orgId}`);
+      const r = await apiClient.get(`/departments/${deptId}/live?orgId=${orgId}`);
       setLiveData(r.data);
     } catch (err) {
       console.error('Error fetching live data:', err);
     }
   }, [deptId, orgId]);
 
+  // ── Shared Socket.IO ───────────────────────────────────────────
   useEffect(() => {
-    axios.get(`${API}/orgs`).then(r => {
+    const socket = getSocket();
+    socketRef.current = socket;
+
+    const onUpdate = () => fetchLive();
+
+    socket.on('queue.updated', onUpdate);
+    socket.on('ticket.called', onUpdate);
+    socket.on('ticket.started', onUpdate);
+    socket.on('ticket.completed', onUpdate);
+    socket.on('ticket.transferred', onUpdate);
+    socket.on('counter.updated', onUpdate);
+    socket.on('worker.updated', onUpdate);
+
+    const unregReconnect = onSocketReconnect(() => {
+      fetchLive();
+    });
+
+    return () => {
+      unregReconnect();
+      socket.off('queue.updated', onUpdate);
+      socket.off('ticket.called', onUpdate);
+      socket.off('ticket.started', onUpdate);
+      socket.off('ticket.completed', onUpdate);
+      socket.off('ticket.transferred', onUpdate);
+      socket.off('counter.updated', onUpdate);
+      socket.off('worker.updated', onUpdate);
+    };
+  }, [deptId, orgId, fetchLive]);
+
+  useEffect(() => {
+    const socket = getSocket();
+    const prev = prevScopeRef.current;
+    if (prev.orgId !== orgId || prev.deptId !== deptId) {
+      socket.emit('switch_scope', { oldOrgId: prev.orgId, oldDeptId: prev.deptId, newOrgId: orgId, newDeptId: deptId });
+      prevScopeRef.current = { orgId, deptId };
+    }
+  }, [orgId, deptId]);
+
+  useEffect(() => {
+    apiClient.get('/orgs').then(r => {
       if (r.data?.length > 0) { setOrgs(r.data); setOrgId(r.data[0]._id); }
     }).finally(() => setLoading(false));
   }, []);
@@ -86,7 +101,7 @@ export default function SupervisorDashboard() {
   useEffect(() => {
     if (!orgId) return;
     setDeptId(''); setLiveData(null);
-    axios.get(`${API}/orgs/${orgId}/departments`).then(r => {
+    apiClient.get(`/orgs/${orgId}/departments`).then(r => {
       const d = r.data || []; setDepts(d);
       if (d.length > 0) setDeptId(d[0]._id);
     });

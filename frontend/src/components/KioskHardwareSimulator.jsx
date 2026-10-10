@@ -1,8 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import axios from 'axios';
 import { Play, Square, Plus, RefreshCw, AlertCircle, CheckCircle2, Cpu } from 'lucide-react';
-
-const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000/api/v1';
+import apiClient from '../services/apiClient';
 
 export default function KioskHardwareSimulator({ orgId, deptId, onDispense }) {
   // Only show simulator in development mode
@@ -33,7 +31,7 @@ export default function KioskHardwareSimulator({ orgId, deptId, onDispense }) {
       setIsProcessing(true);
       setLastError(null);
 
-      const res = await axios.post(`${API_BASE}/tokens/dispense`, {
+      const res = await apiClient.post('/tokens/dispense', {
         orgId,
         deptId,
         source: 'KIOSK',

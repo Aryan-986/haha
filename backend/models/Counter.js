@@ -22,6 +22,11 @@ const counterSchema = new mongoose.Schema({
     trim: true,
     default: ''
   },
+  roomNumber: {
+    type: String,
+    trim: true,
+    default: ''
+  },
   status: {
     type: String,
     enum: ['AVAILABLE', 'BUSY', 'OFFLINE', 'PAUSED'],
