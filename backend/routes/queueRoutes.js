@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
+const rateLimit = require('express-rate-limit');
 const Service = require('../models/Service');
 const QueueRecord = require('../models/QueueRecord');
 const Ticket = require('../models/Ticket');
@@ -8,6 +9,7 @@ const Department = require('../models/Department');
 const Organization = require('../models/Organization');
 const queueService = require('../services/queueService');
 const { emitQueueEvent } = require('../socket');
+const { requireAuth, checkRole } = require('../middleware/authMiddleware');
 
 const isValidObjectId = (id) => mongoose.Types.ObjectId.isValid(id);
 
@@ -294,109 +296,46 @@ router.post('/admin/sim-update', async (req, res) => {
 
 // =======================================================================
 // POST /api/v1/tokens/issue & POST /api/tokens/issue
+// FIXED: Now uses queueService.issueTicket (atomic, idempotent, correct)
+// The previous inline handler used non-atomic Ticket.countDocuments which
+// could produce duplicate ticket numbers under concurrent load.
 // =======================================================================
 const issueTokenHandler = async (req, res) => {
   try {
-    const { orgId, deptId, departmentId, organizationId, roomId, roomNumber } = req.body;
+    const { orgId, deptId, departmentId, organizationId, roomNumber, idempotencyKey, priority, source } = req.body;
     const targetOrgId = orgId || organizationId;
     const targetDeptId = deptId || departmentId;
+    const key = req.headers['idempotency-key'] || idempotencyKey;
 
-    let targetDept = null;
-
-    if (targetDeptId) {
-      if (!isValidObjectId(targetDeptId)) {
-        return res.status(400).json({ error: 'Invalid Department ID format' });
-      }
-      targetDept = await Department.findById(targetDeptId);
-      if (!targetDept) {
-        return res.status(404).json({ error: 'Specified department not found' });
-      }
-    } else if (targetOrgId) {
-      if (!isValidObjectId(targetOrgId)) {
-        return res.status(400).json({ error: 'Invalid Organization ID format' });
-      }
-      targetDept = await Department.findOne({ orgId: targetOrgId, isEntryLevel: true });
-      if (!targetDept) {
-        targetDept = await Department.findOne({ orgId: targetOrgId }).sort({ createdAt: 1 });
-      }
-      if (!targetDept) {
-        return res.status(400).json({ error: 'No departments configured for this organization' });
-      }
-    } else {
-      targetDept = await Department.findOne({ isEntryLevel: true });
-      if (!targetDept) {
-        targetDept = await Department.findOne().sort({ createdAt: 1 });
-      }
-      if (!targetDept) {
-        return res.status(400).json({ error: 'No departments available to issue ticket. Please specify an orgId.' });
-      }
+    if (!targetOrgId || !mongoose.Types.ObjectId.isValid(targetOrgId)) {
+      return res.status(400).json({ error: 'Valid orgId or organizationId is required' });
+    }
+    if (!targetDeptId || !mongoose.Types.ObjectId.isValid(targetDeptId)) {
+      return res.status(400).json({ error: 'Valid deptId or departmentId is required' });
     }
 
-    // Resolve roomNumber: use explicit param, or inherit from target department
-    const resolvedRoomNumber = roomNumber || targetDept.roomNumber || '';
-
-    // Resolve targetRoomId: use explicit roomId param, or if dept has a roomNumber, use dept._id as room ref
-    let resolvedRoomId = null;
-    if (roomId && isValidObjectId(roomId)) {
-      resolvedRoomId = roomId;
-    } else if (targetDept.roomNumber) {
-      resolvedRoomId = targetDept._id;
-    }
-
-    const deptPrefix = (targetDept.prefix || 'T').toUpperCase();
-    const count = await Ticket.countDocuments({ currentDeptId: targetDept._id });
-    const ticketNumber = `${deptPrefix}-${String(count + 1).padStart(3, '0')}`;
-
-    const pendingCount = await Ticket.countDocuments({
-      currentDeptId: targetDept._id,
-      status: { $in: ['WAITING', 'TRANSFERRED'] }
-    });
-    const positionInQueue = pendingCount + 1;
-
-    const newTicket = await Ticket.create({
-      ticketNumber,
-      orgId: targetDept.orgId,
-      currentDeptId: targetDept._id,
-      targetRoomId: resolvedRoomId,
-      roomNumber: resolvedRoomNumber,
-      status: 'WAITING',
-      positionInQueue,
-      history: [
-        {
-          deptId: targetDept._id,
-          timestamp: new Date(),
-          servedBy: null
-        }
-      ]
+    const result = await queueService.issueTicket({
+      organizationId: targetOrgId,
+      departmentId: targetDeptId,
+      priority: priority || 'NORMAL',
+      source: source || 'WEB',
+      roomNumber,
+      idempotencyKey: key
     });
 
-    const activeCounters = (targetDept.subCounters && targetDept.subCounters.length > 0)
-      ? targetDept.subCounters.length
-      : 1;
-    const avgServiceTime = targetDept.avgServiceTimeMins || 5;
-    const estimatedWaitMin = Math.ceil((pendingCount * avgServiceTime) / activeCounters);
-
-    // Emit Socket.io event for token issued
-    emitQueueEvent('TOKEN_UPDATED', {
-      orgId: targetDept.orgId?.toString(),
-      deptId: targetDept._id.toString(),
-      ticket: newTicket,
-      ticketNumber: newTicket.ticketNumber,
-      roomNumber: resolvedRoomNumber,
-      event: 'ISSUE'
-    });
-
-    res.status(201).json({
+    res.status(result.isIdempotent ? 200 : 201).json({
       success: true,
-      message: 'Ticket issued successfully',
-      ticket: newTicket,
-      department: targetDept,
-      positionInQueue,
-      estimatedWaitMin
+      message: result.isIdempotent ? 'Ticket already issued (idempotent)' : 'Ticket issued successfully',
+      ticket: result.ticket,
+      ticketNumber: result.ticketNumber,
+      trackingToken: result.trackingToken,
+      positionInQueue: result.position,
+      estimatedWaitMin: result.estimatedWaitMin,
+      department: result.department
     });
   } catch (err) {
     console.error('ERROR in /tokens/issue:', err);
-    res.status(500).json({ error: 'Failed to issue token', details: err.message });
+    res.status(err.status || 500).json({ error: err.message || 'Failed to issue token' });
   }
 };
 

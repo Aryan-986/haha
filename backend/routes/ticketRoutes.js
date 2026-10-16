@@ -1,29 +1,71 @@
 /**
  * ticketRoutes.js
- * Clean canonical REST API for QueueLess Ticket operations
+ * Canonical REST API for QueueLess Ticket operations.
+ *
+ * Authorization model:
+ * - Public: POST / (issue ticket), GET /track/:token (tracking by token)
+ * - Staff-authenticated: GET /:id and all lifecycle mutations (start, complete, transfer, etc.)
+ * - Citizens cannot perform staff operations; staff cannot bypass scope.
  */
 
 const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
+const rateLimit = require('express-rate-limit');
 const queueService = require('../services/queueService');
 const Ticket = require('../models/Ticket');
 const citizenService = require('../services/citizenService');
+const { requireAuth, resolveStaffWorker } = require('../middleware/authMiddleware');
 
 const isValidObjectId = (id) => mongoose.Types.ObjectId.isValid(id);
 
-// POST /api/v1/tickets - Issue a new Ticket
-router.post('/', async (req, res) => {
+// ─────────────────────────────────────────────────────────────────────────────
+// Rate limiting for public ticket issuance
+// ─────────────────────────────────────────────────────────────────────────────
+
+const ticketIssuanceLimit = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: process.env.TICKET_RATE_LIMIT ? parseInt(process.env.TICKET_RATE_LIMIT) : 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    error: 'Too many ticket requests from this IP. Please wait before requesting another ticket.'
+  },
+  skip: (req) => {
+    // Skip rate limiting in test environments
+    return process.env.NODE_ENV === 'test' && process.env.TEST_AUTH_BYPASS === 'true';
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PUBLIC CITIZEN ENDPOINTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * POST /api/v1/tickets - Issue a new Ticket (public, rate-limited)
+ * Citizens may issue tickets anonymously.
+ * Idempotency key prevents duplicate issuance on retries.
+ */
+router.post('/', ticketIssuanceLimit, async (req, res) => {
   try {
     const { organizationId, departmentId, serviceId, priority, source, roomNumber, idempotencyKey } = req.body;
     const key = req.headers['idempotency-key'] || idempotencyKey;
+
+    // Validate required fields
+    if (!organizationId || !isValidObjectId(organizationId)) {
+      return res.status(400).json({ success: false, error: 'Valid organizationId is required' });
+    }
+    if (!departmentId || !isValidObjectId(departmentId)) {
+      return res.status(400).json({ success: false, error: 'Valid departmentId is required' });
+    }
 
     const result = await queueService.issueTicket({
       organizationId,
       departmentId,
       serviceId,
       priority,
-      source,
+      source: source || 'WEB',
       roomNumber,
       idempotencyKey: key
     });
@@ -34,11 +76,15 @@ router.post('/', async (req, res) => {
   }
 });
 
-// GET /api/v1/tickets/track/:trackingToken - Secure anonymous ticket tracking
+/**
+ * GET /api/v1/tickets/track/:trackingToken - Secure anonymous ticket tracking.
+ * Access is authorized by possession of the high-entropy tracking token.
+ * The tracking token is never predictable or guessable.
+ */
 router.get('/track/:trackingToken', async (req, res) => {
   try {
     const { trackingToken } = req.params;
-    if (!trackingToken || typeof trackingToken !== 'string') {
+    if (!trackingToken || typeof trackingToken !== 'string' || trackingToken.length < 16) {
       return res.status(400).json({ success: false, error: 'Valid tracking token is required' });
     }
 
@@ -46,7 +92,7 @@ router.get('/track/:trackingToken', async (req, res) => {
     const positionData = await citizenService.getTicketPosition(ticket._id);
     const etaData = await citizenService.getTicketETA(ticket._id);
 
-    // Return citizen-safe representation
+    // Return citizen-safe representation only — no staff identities or internal IDs
     res.json({
       success: true,
       ticket: {
@@ -91,8 +137,17 @@ router.get('/track/:trackingToken', async (req, res) => {
   }
 });
 
-// GET /api/v1/tickets/:id - Get Ticket details and dynamic priority-aware position
-router.get('/:id', async (req, res) => {
+// ─────────────────────────────────────────────────────────────────────────────
+// STAFF-AUTHENTICATED ENDPOINTS
+// All routes below require a valid Clerk session.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * GET /api/v1/tickets/:id - Get full ticket details.
+ * Requires authentication — raw ticket IDs must not be publicly accessible
+ * (citizens use /track/:trackingToken instead).
+ */
+router.get('/:id', requireAuth, async (req, res) => {
   try {
     const { id } = req.params;
     let ticket = null;
@@ -127,12 +182,14 @@ router.get('/:id', async (req, res) => {
     });
   } catch (err) {
     console.error('Error in GET /api/v1/tickets/:id:', err);
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: 'Failed to fetch ticket.' });
   }
 });
 
-// GET /api/v1/tickets/:id/position - Real priority-aware queue position
-router.get('/:id/position', async (req, res) => {
+/**
+ * GET /api/v1/tickets/:id/position
+ */
+router.get('/:id/position', requireAuth, async (req, res) => {
   try {
     const { id } = req.params;
     let ticketId = id;
@@ -150,8 +207,10 @@ router.get('/:id/position', async (req, res) => {
   }
 });
 
-// GET /api/v1/tickets/:id/eta - Live calculated waiting time
-router.get('/:id/eta', async (req, res) => {
+/**
+ * GET /api/v1/tickets/:id/eta
+ */
+router.get('/:id/eta', requireAuth, async (req, res) => {
   try {
     const { id } = req.params;
     let ticketId = id;
@@ -169,8 +228,10 @@ router.get('/:id/eta', async (req, res) => {
   }
 });
 
-// GET /api/v1/tickets/:id/journey - Multi-department journey stages
-router.get('/:id/journey', async (req, res) => {
+/**
+ * GET /api/v1/tickets/:id/journey
+ */
+router.get('/:id/journey', requireAuth, async (req, res) => {
   try {
     const { id } = req.params;
     let ticketId = id;
@@ -188,8 +249,10 @@ router.get('/:id/journey', async (req, res) => {
   }
 });
 
-// GET /api/v1/tickets/:id/events - Immutable QueueEvent audit timeline (safe fields)
-router.get('/:id/events', async (req, res) => {
+/**
+ * GET /api/v1/tickets/:id/events - Immutable audit timeline (citizen-safe fields)
+ */
+router.get('/:id/events', requireAuth, async (req, res) => {
   try {
     const { id } = req.params;
     let ticketId = id;
@@ -207,11 +270,22 @@ router.get('/:id/events', async (req, res) => {
   }
 });
 
-// POST /api/v1/tickets/:id/start - Start service
-router.post('/:id/start', async (req, res) => {
+/**
+ * POST /api/v1/tickets/:id/start - Start service (staff only)
+ */
+router.post('/:id/start', requireAuth, async (req, res) => {
   try {
     const { id } = req.params;
-    const { workerId, counterId } = req.body;
+    const isTestBypass = process.env.NODE_ENV === 'test' && process.env.TEST_AUTH_BYPASS === 'true';
+    let { workerId, counterId } = req.body;
+
+    if (!isTestBypass) {
+      const worker = await resolveStaffWorker(req);
+      if (!worker) return res.status(403).json({ success: false, error: 'No worker profile found.' });
+      workerId = worker._id.toString();
+      counterId = counterId || worker.counterId?._id?.toString();
+    }
+
     const ticket = await queueService.startService({ ticketId: id, workerId, counterId });
     res.json({ success: true, message: 'Service started', ticket });
   } catch (err) {
@@ -220,11 +294,22 @@ router.post('/:id/start', async (req, res) => {
   }
 });
 
-// POST /api/v1/tickets/:id/complete - Complete service
-router.post('/:id/complete', async (req, res) => {
+/**
+ * POST /api/v1/tickets/:id/complete - Complete service (staff only)
+ */
+router.post('/:id/complete', requireAuth, async (req, res) => {
   try {
     const { id } = req.params;
-    const { workerId, counterId } = req.body;
+    const isTestBypass = process.env.NODE_ENV === 'test' && process.env.TEST_AUTH_BYPASS === 'true';
+    let { workerId, counterId } = req.body;
+
+    if (!isTestBypass) {
+      const worker = await resolveStaffWorker(req);
+      if (!worker) return res.status(403).json({ success: false, error: 'No worker profile found.' });
+      workerId = worker._id.toString();
+      counterId = counterId || worker.counterId?._id?.toString();
+    }
+
     const ticket = await queueService.completeService({ ticketId: id, workerId, counterId });
     res.json({ success: true, message: 'Service completed', ticket });
   } catch (err) {
@@ -233,11 +318,23 @@ router.post('/:id/complete', async (req, res) => {
   }
 });
 
-// POST /api/v1/tickets/:id/transfer - Transfer ticket downstream
-router.post('/:id/transfer', async (req, res) => {
+/**
+ * POST /api/v1/tickets/:id/transfer - Transfer ticket downstream (staff only)
+ */
+router.post('/:id/transfer', requireAuth, async (req, res) => {
   try {
     const { id } = req.params;
-    const { targetDepartmentId, targetCounterId, workerId, counterId } = req.body;
+    const { targetDepartmentId, targetCounterId } = req.body;
+    const isTestBypass = process.env.NODE_ENV === 'test' && process.env.TEST_AUTH_BYPASS === 'true';
+    let { workerId, counterId } = req.body;
+
+    if (!isTestBypass) {
+      const worker = await resolveStaffWorker(req);
+      if (!worker) return res.status(403).json({ success: false, error: 'No worker profile found.' });
+      workerId = worker._id.toString();
+      counterId = counterId || worker.counterId?._id?.toString();
+    }
+
     const result = await queueService.transferTicket({
       ticketId: id,
       targetDepartmentId,
@@ -252,11 +349,22 @@ router.post('/:id/transfer', async (req, res) => {
   }
 });
 
-// POST /api/v1/tickets/:id/snooze - Snooze ticket
-router.post('/:id/snooze', async (req, res) => {
+/**
+ * POST /api/v1/tickets/:id/snooze - Snooze ticket (staff only)
+ */
+router.post('/:id/snooze', requireAuth, async (req, res) => {
   try {
     const { id } = req.params;
-    const { minutes, workerId } = req.body;
+    const { minutes } = req.body;
+    const isTestBypass = process.env.NODE_ENV === 'test' && process.env.TEST_AUTH_BYPASS === 'true';
+    let workerId = req.body.workerId;
+
+    if (!isTestBypass) {
+      const worker = await resolveStaffWorker(req);
+      if (!worker) return res.status(403).json({ success: false, error: 'No worker profile found.' });
+      workerId = worker._id.toString();
+    }
+
     const ticket = await queueService.snoozeTicket({
       ticketId: id,
       minutes: Number(minutes) || 5,
@@ -269,11 +377,22 @@ router.post('/:id/snooze', async (req, res) => {
   }
 });
 
-// POST /api/v1/tickets/:id/skip - Skip ticket
-router.post('/:id/skip', async (req, res) => {
+/**
+ * POST /api/v1/tickets/:id/skip - Skip ticket (staff only)
+ */
+router.post('/:id/skip', requireAuth, async (req, res) => {
   try {
     const { id } = req.params;
-    const { workerId, counterId } = req.body;
+    const isTestBypass = process.env.NODE_ENV === 'test' && process.env.TEST_AUTH_BYPASS === 'true';
+    let { workerId, counterId } = req.body;
+
+    if (!isTestBypass) {
+      const worker = await resolveStaffWorker(req);
+      if (!worker) return res.status(403).json({ success: false, error: 'No worker profile found.' });
+      workerId = worker._id.toString();
+      counterId = counterId || worker.counterId?._id?.toString();
+    }
+
     const ticket = await queueService.skipTicket({ ticketId: id, workerId, counterId });
     res.json({ success: true, message: 'Ticket marked as skipped', ticket });
   } catch (err) {
@@ -282,11 +401,22 @@ router.post('/:id/skip', async (req, res) => {
   }
 });
 
-// POST /api/v1/tickets/:id/no-show - Mark as No-Show
-router.post('/:id/no-show', async (req, res) => {
+/**
+ * POST /api/v1/tickets/:id/no-show - Mark as No-Show (staff only)
+ */
+router.post('/:id/no-show', requireAuth, async (req, res) => {
   try {
     const { id } = req.params;
-    const { workerId, counterId } = req.body;
+    const isTestBypass = process.env.NODE_ENV === 'test' && process.env.TEST_AUTH_BYPASS === 'true';
+    let { workerId, counterId } = req.body;
+
+    if (!isTestBypass) {
+      const worker = await resolveStaffWorker(req);
+      if (!worker) return res.status(403).json({ success: false, error: 'No worker profile found.' });
+      workerId = worker._id.toString();
+      counterId = counterId || worker.counterId?._id?.toString();
+    }
+
     const ticket = await queueService.noShowTicket({ ticketId: id, workerId, counterId });
     res.json({ success: true, message: 'Ticket marked as no-show', ticket });
   } catch (err) {
@@ -295,11 +425,22 @@ router.post('/:id/no-show', async (req, res) => {
   }
 });
 
-// POST /api/v1/tickets/:id/recall - Recall a CALLED ticket (re-announce)
-router.post('/:id/recall', async (req, res) => {
+/**
+ * POST /api/v1/tickets/:id/recall - Recall a CALLED ticket (staff only)
+ */
+router.post('/:id/recall', requireAuth, async (req, res) => {
   try {
     const { id } = req.params;
-    const { workerId, counterId } = req.body;
+    const isTestBypass = process.env.NODE_ENV === 'test' && process.env.TEST_AUTH_BYPASS === 'true';
+    let { workerId, counterId } = req.body;
+
+    if (!isTestBypass) {
+      const worker = await resolveStaffWorker(req);
+      if (!worker) return res.status(403).json({ success: false, error: 'No worker profile found.' });
+      workerId = worker._id.toString();
+      counterId = counterId || worker.counterId?._id?.toString();
+    }
+
     const ticket = await queueService.recallTicket({ ticketId: id, workerId, counterId });
     res.json({ success: true, message: 'Ticket recalled successfully', ticket });
   } catch (err) {
@@ -308,11 +449,21 @@ router.post('/:id/recall', async (req, res) => {
   }
 });
 
-// POST /api/v1/tickets/:id/resume - Resume a SNOOZED ticket back to WAITING
-router.post('/:id/resume', async (req, res) => {
+/**
+ * POST /api/v1/tickets/:id/resume - Resume a SNOOZED ticket (staff only)
+ */
+router.post('/:id/resume', requireAuth, async (req, res) => {
   try {
     const { id } = req.params;
-    const { workerId } = req.body;
+    const isTestBypass = process.env.NODE_ENV === 'test' && process.env.TEST_AUTH_BYPASS === 'true';
+    let workerId = req.body.workerId;
+
+    if (!isTestBypass) {
+      const worker = await resolveStaffWorker(req);
+      if (!worker) return res.status(403).json({ success: false, error: 'No worker profile found.' });
+      workerId = worker._id.toString();
+    }
+
     const ticket = await queueService.resumeTicket({ ticketId: id, workerId });
     res.json({ success: true, message: 'Ticket resumed', ticket });
   } catch (err) {
@@ -322,4 +473,3 @@ router.post('/:id/resume', async (req, res) => {
 });
 
 module.exports = router;
-

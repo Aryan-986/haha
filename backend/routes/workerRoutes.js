@@ -1,7 +1,12 @@
 /**
  * workerRoutes.js
- * Worker portal routes backed by QueueService & WorkerService — Phase 2
- * Fully operational lifecycle: call → start → complete + break + recall + snooze + transfer + skip + no-show
+ * Worker portal routes — secured with authentication and scope enforcement.
+ *
+ * Authorization model:
+ * - All non-public routes require Clerk authentication
+ * - Workers can only operate on their assigned organization/department/counter
+ * - Supervisors and master_admin have elevated read access
+ * - Worker identity is ALWAYS resolved server-side from Worker.authUserId
  */
 
 const express = require('express');
@@ -14,98 +19,89 @@ const Counter = require('../models/Counter');
 const Worker = require('../models/Worker');
 const queueService = require('../services/queueService');
 const workerService = require('../services/workerService');
+const {
+  requireAuth,
+  checkRole,
+  requireWorkerScope,
+  resolveStaffWorker
+} = require('../middleware/authMiddleware');
 
 const isValidObjectId = (id) => mongoose.Types.ObjectId.isValid(id);
 
-// -------------------------------------------------------------------
+// ─────────────────────────────────────────────────────────────────────────────
 // WORKER IDENTITY & PROFILE
-// -------------------------------------------------------------------
+// ─────────────────────────────────────────────────────────────────────────────
 
-// GET /api/v1/worker/me - Get worker profile from authUserId (or fallback)
-router.get('/me', async (req, res) => {
+/**
+ * GET /api/v1/worker/me
+ * Returns the authenticated staff member's profile.
+ * Identity is resolved ONLY from the Clerk session — never from query params.
+ */
+router.get('/me', requireAuth, async (req, res) => {
   try {
-    const authUserId = req.auth?.userId || req.query.authUserId;
-    const { orgId } = req.query;
+    const authUserId = req.auth?.userId;
 
-    let worker = null;
+    // Test bypass: allow x-test-user-id header
+    const isTestBypass = process.env.NODE_ENV === 'test' && process.env.TEST_AUTH_BYPASS === 'true';
+    const effectiveUserId = isTestBypass
+      ? (req.headers['x-test-user-id'] || authUserId)
+      : authUserId;
 
-    if (authUserId) {
-      const profile = await workerService.getWorkerProfile(authUserId);
-      if (profile?.worker) {
-        return res.json({ success: true, ...profile });
+    if (!effectiveUserId) {
+      return res.status(401).json({ success: false, error: 'Unauthorized: No authenticated session.' });
+    }
+
+    const profile = await workerService.getWorkerProfile(effectiveUserId);
+    if (!profile?.worker) {
+      return res.status(404).json({ success: false, error: 'Worker profile not found for this account.' });
+    }
+
+    return res.json({ success: true, ...profile });
+  } catch (err) {
+    console.error('Error in GET /worker/me:', err);
+    res.status(500).json({ success: false, error: 'Failed to load worker profile.' });
+  }
+});
+
+/**
+ * GET /api/v1/worker/workers?orgId=&deptId=
+ * Lists workers. Requires authentication. Scoped by org for non-admin users.
+ */
+router.get('/workers', requireAuth, async (req, res) => {
+  try {
+    const { orgId, deptId } = req.query;
+
+    // Resolve caller's identity to enforce scope
+    const isTestBypass = process.env.NODE_ENV === 'test' && process.env.TEST_AUTH_BYPASS === 'true';
+    let callerRole = req.headers['x-test-role']?.toLowerCase();
+
+    if (!isTestBypass) {
+      const worker = await resolveStaffWorker(req);
+      callerRole = worker?.role?.toLowerCase();
+
+      // Non-admin workers can only list workers in their own org
+      if (!['master_admin', 'supervisor', 'org_admin'].includes(callerRole)) {
+        if (orgId && worker?.organizationId?._id?.toString() !== orgId) {
+          return res.status(403).json({ success: false, error: 'Forbidden: Cannot list workers for other organizations.' });
+        }
       }
     }
 
-    // Fallback: find by orgId (dev mode)
-    if (orgId && isValidObjectId(orgId)) {
-      worker = await Worker.findOne({ organizationId: orgId })
-        .populate('organizationId', 'name type')
-        .populate('departmentId', 'name prefix roomNumber avgServiceTimeMins')
-        .populate('counterId', 'name counterNumber status currentTicketId isActive');
-    }
-
-    if (!worker) {
-      return res.status(404).json({ success: false, error: 'Worker profile not found' });
-    }
-
-    let currentTicket = null;
-    if (worker.counterId?.currentTicketId) {
-      currentTicket = await Ticket.findById(worker.counterId.currentTicketId)
-        .populate('currentDepartmentId', 'name prefix');
-    }
-
-    res.json({ success: true, worker, currentTicket });
-  } catch (err) {
-    console.error('Error in GET /worker/me:', err);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// GET /api/v1/worker/identity - Legacy compat (dev only)
-router.get('/identity', async (req, res) => {
-  try {
-    const { orgId, authUserId, name } = req.query;
-    if (!orgId || !isValidObjectId(orgId)) {
-      return res.status(400).json({ error: 'Valid orgId is required' });
-    }
-
-    let worker = null;
-    if (authUserId) {
-      worker = await Worker.findOne({ organizationId: orgId, authUserId });
-    }
-    if (!worker) {
-      worker = await Worker.findOne({ organizationId: orgId });
-    }
-    if (!worker) {
-      worker = await Worker.create({
-        organizationId: orgId,
-        name: name || 'Desk Worker',
-        role: 'WORKER'
-      });
-    }
-
-    res.json(worker);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// GET /api/v1/worker/workers?orgId=&deptId= - List workers
-router.get('/workers', async (req, res) => {
-  try {
-    const { orgId, deptId } = req.query;
     const workers = await workerService.listWorkers({
       organizationId: orgId && isValidObjectId(orgId) ? orgId : null,
       departmentId: deptId && isValidObjectId(deptId) ? deptId : null
     });
     res.json({ success: true, workers });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: 'Failed to fetch workers.' });
   }
 });
 
-// PATCH /api/v1/worker/workers/:id - Update worker
-router.patch('/workers/:id', async (req, res) => {
+/**
+ * PATCH /api/v1/worker/workers/:id
+ * Update worker assignment. Requires supervisor or master_admin.
+ */
+router.patch('/workers/:id', requireAuth, checkRole(['supervisor', 'master_admin', 'org_admin']), async (req, res) => {
   try {
     const { id } = req.params;
     const { organizationId, name, role, departmentId, counterId } = req.body;
@@ -124,12 +120,15 @@ router.patch('/workers/:id', async (req, res) => {
     if (!worker) return res.status(404).json({ success: false, error: 'Worker not found' });
     res.json({ success: true, worker });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: 'Failed to update worker.' });
   }
 });
 
-// POST /api/v1/worker/workers - Create worker
-router.post('/workers', async (req, res) => {
+/**
+ * POST /api/v1/worker/workers
+ * Create a worker. Restricted to supervisor and master_admin.
+ */
+router.post('/workers', requireAuth, checkRole(['supervisor', 'master_admin', 'org_admin']), async (req, res) => {
   try {
     const { organizationId, departmentId, name, role, authUserId } = req.body;
     if (!organizationId || !name) {
@@ -149,57 +148,102 @@ router.post('/workers', async (req, res) => {
   }
 });
 
-// -------------------------------------------------------------------
+// ─────────────────────────────────────────────────────────────────────────────
 // WORKER BREAK SYSTEM
-// -------------------------------------------------------------------
+// ─────────────────────────────────────────────────────────────────────────────
 
-// POST /api/v1/worker/break - Worker starts break
-router.post('/break', async (req, res) => {
+/**
+ * POST /api/v1/worker/break
+ * Worker starts a break. Resolved workerId comes from server-side lookup.
+ */
+router.post('/break', requireAuth, async (req, res) => {
   try {
-    const { workerId, organizationId } = req.body;
+    const isTestBypass = process.env.NODE_ENV === 'test' && process.env.TEST_AUTH_BYPASS === 'true';
+    let workerId = req.body.workerId;
+
+    // In production, resolve workerId server-side, don't trust body
+    if (!isTestBypass) {
+      const worker = await resolveStaffWorker(req);
+      if (!worker) return res.status(403).json({ success: false, error: 'No worker profile found.' });
+      workerId = worker._id.toString();
+    }
+
     if (!workerId || !isValidObjectId(workerId)) {
       return res.status(400).json({ success: false, error: 'Valid workerId is required' });
     }
-    const worker = await workerService.startWorkerBreak({ workerId, organizationId });
+    const worker = await workerService.startWorkerBreak({ workerId, organizationId: req.body.organizationId });
     res.json({ success: true, message: 'Break started', worker });
   } catch (err) {
     res.status(err.status || 400).json({ success: false, error: err.message });
   }
 });
 
-// POST /api/v1/worker/break-end - Worker ends break
-router.post('/break-end', async (req, res) => {
+/**
+ * POST /api/v1/worker/break-end
+ * Worker ends break.
+ */
+router.post('/break-end', requireAuth, async (req, res) => {
   try {
-    const { workerId, organizationId } = req.body;
+    const isTestBypass = process.env.NODE_ENV === 'test' && process.env.TEST_AUTH_BYPASS === 'true';
+    let workerId = req.body.workerId;
+
+    if (!isTestBypass) {
+      const worker = await resolveStaffWorker(req);
+      if (!worker) return res.status(403).json({ success: false, error: 'No worker profile found.' });
+      workerId = worker._id.toString();
+    }
+
     if (!workerId || !isValidObjectId(workerId)) {
       return res.status(400).json({ success: false, error: 'Valid workerId is required' });
     }
-    const worker = await workerService.endWorkerBreak({ workerId, organizationId });
+    const worker = await workerService.endWorkerBreak({ workerId, organizationId: req.body.organizationId });
     res.json({ success: true, message: 'Break ended, back to AVAILABLE', worker });
   } catch (err) {
     res.status(err.status || 400).json({ success: false, error: err.message });
   }
 });
 
-// -------------------------------------------------------------------
-// QUEUE OPERATIONS
-// -------------------------------------------------------------------
+// ─────────────────────────────────────────────────────────────────────────────
+// QUEUE OPERATIONS — All require authentication
+// ─────────────────────────────────────────────────────────────────────────────
 
-// POST /api/v1/worker/department/:departmentId/call-next
-router.post('/department/:departmentId/call-next', async (req, res) => {
+/**
+ * POST /api/v1/worker/department/:departmentId/call-next
+ * Call next ticket. Worker scope enforced: worker must belong to this department's org.
+ */
+router.post('/department/:departmentId/call-next', requireAuth, async (req, res) => {
   try {
     const { departmentId } = req.params;
-    const { orgId, counterId, workerId, roomId } = req.body;
-
     if (!isValidObjectId(departmentId)) {
       return res.status(400).json({ error: 'Invalid Department ID format' });
+    }
+
+    const isTestBypass = process.env.NODE_ENV === 'test' && process.env.TEST_AUTH_BYPASS === 'true';
+    let { orgId, counterId, workerId, roomId } = req.body;
+
+    // Resolve identity server-side in production
+    if (!isTestBypass) {
+      const worker = await resolveStaffWorker(req);
+      if (!worker) return res.status(403).json({ error: 'No worker profile found for this account.' });
+
+      // Enforce department belongs to worker's org
+      const dept = await Department.findById(departmentId);
+      if (!dept) return res.status(404).json({ error: 'Department not found' });
+      if (dept.orgId.toString() !== worker.organizationId._id.toString()) {
+        return res.status(403).json({ error: 'Forbidden: Department does not belong to your organization.' });
+      }
+
+      // Use server-resolved identity
+      workerId = worker._id.toString();
+      orgId = worker.organizationId._id.toString();
+      counterId = counterId || worker.counterId?._id?.toString();
     }
 
     // Verify worker isn't on break
     if (workerId && isValidObjectId(workerId)) {
       const w = await Worker.findById(workerId);
       if (w && w.status === 'ON_BREAK') {
-        return res.status(400).json({ error: 'Cannot call next while on break' });
+        return res.status(400).json({ error: 'Cannot call next ticket while on break.' });
       }
     }
 
@@ -221,12 +265,15 @@ router.post('/department/:departmentId/call-next', async (req, res) => {
     });
   } catch (err) {
     console.error('ERROR in /department/:departmentId/call-next:', err);
-    res.status(500).json({ error: 'Failed to call next ticket', details: err.message });
+    res.status(500).json({ error: 'Failed to call next ticket.' });
   }
 });
 
-// GET /api/v1/worker/department/:departmentId/current
-router.get('/department/:departmentId/current', async (req, res) => {
+/**
+ * GET /api/v1/worker/department/:departmentId/current
+ * Get the currently serving ticket for this department.
+ */
+router.get('/department/:departmentId/current', requireAuth, async (req, res) => {
   try {
     const { departmentId } = req.params;
     const { roomId } = req.query;
@@ -237,6 +284,15 @@ router.get('/department/:departmentId/current', async (req, res) => {
 
     const dept = await Department.findById(departmentId);
     if (!dept) return res.status(404).json({ error: 'Department not found' });
+
+    // Enforce org scope for non-test environments
+    const isTestBypass = process.env.NODE_ENV === 'test' && process.env.TEST_AUTH_BYPASS === 'true';
+    if (!isTestBypass) {
+      const worker = await resolveStaffWorker(req);
+      if (worker && dept.orgId.toString() !== worker.organizationId._id.toString()) {
+        return res.status(403).json({ error: 'Forbidden: Department does not belong to your organization.' });
+      }
+    }
 
     const servingFilter = {
       currentDepartmentId: departmentId,
@@ -271,17 +327,30 @@ router.get('/department/:departmentId/current', async (req, res) => {
     });
   } catch (err) {
     console.error('ERROR in /department/:departmentId/current:', err);
-    res.status(500).json({ error: 'Failed to fetch current serving ticket', details: err.message });
+    res.status(500).json({ error: 'Failed to fetch current serving ticket.' });
   }
 });
 
-// POST /api/v1/worker/tokens/transfer
-router.post('/tokens/transfer', async (req, res) => {
+/**
+ * POST /api/v1/worker/tokens/transfer
+ */
+router.post('/tokens/transfer', requireAuth, async (req, res) => {
   try {
-    const { ticketId, ticketNumber, targetDeptId, targetCounterId, workerId, counterId, reason, transferReason } = req.body;
+    const { ticketId, ticketNumber, targetDeptId, targetCounterId, reason, transferReason } = req.body;
 
     if (!targetDeptId || !isValidObjectId(targetDeptId)) {
       return res.status(400).json({ error: 'Valid targetDeptId is required' });
+    }
+
+    const isTestBypass = process.env.NODE_ENV === 'test' && process.env.TEST_AUTH_BYPASS === 'true';
+    let workerId = req.body.workerId;
+    let counterId = req.body.counterId;
+
+    if (!isTestBypass) {
+      const worker = await resolveStaffWorker(req);
+      if (!worker) return res.status(403).json({ error: 'No worker profile found.' });
+      workerId = worker._id.toString();
+      counterId = counterId || worker.counterId?._id?.toString();
     }
 
     let resolvedTicketId = ticketId;
@@ -307,7 +376,9 @@ router.post('/tokens/transfer', async (req, res) => {
     });
 
     const targetRoomStr = result.ticket.roomNumber ? ` [Room ${result.ticket.roomNumber}]` : '';
-    const targetCounterStr = result.targetCounter ? ` · ${result.targetCounter.name || `Counter ${result.targetCounter.counterNumber}`}` : '';
+    const targetCounterStr = result.targetCounter
+      ? ` · ${result.targetCounter.name || `Counter ${result.targetCounter.counterNumber}`}`
+      : '';
 
     return res.json({
       success: true,
@@ -319,14 +390,26 @@ router.post('/tokens/transfer', async (req, res) => {
     });
   } catch (err) {
     console.error('ERROR in /tokens/transfer:', err);
-    res.status(err.status || 500).json({ error: 'Failed to transfer ticket', details: err.message });
+    res.status(err.status || 500).json({ error: err.message || 'Failed to transfer ticket.' });
   }
 });
 
-// POST /api/v1/worker/tokens/start
-router.post('/tokens/start', async (req, res) => {
+/**
+ * POST /api/v1/worker/tokens/start
+ */
+router.post('/tokens/start', requireAuth, async (req, res) => {
   try {
-    const { ticketId, workerId, counterId } = req.body;
+    const { ticketId } = req.body;
+    const isTestBypass = process.env.NODE_ENV === 'test' && process.env.TEST_AUTH_BYPASS === 'true';
+    let { workerId, counterId } = req.body;
+
+    if (!isTestBypass) {
+      const worker = await resolveStaffWorker(req);
+      if (!worker) return res.status(403).json({ error: 'No worker profile found.' });
+      workerId = worker._id.toString();
+      counterId = counterId || worker.counterId?._id?.toString();
+    }
+
     const ticket = await queueService.startService({ ticketId, workerId, counterId });
     res.json({ success: true, message: 'Service started', ticket });
   } catch (err) {
@@ -334,10 +417,22 @@ router.post('/tokens/start', async (req, res) => {
   }
 });
 
-// POST /api/v1/worker/tokens/complete
-router.post('/tokens/complete', async (req, res) => {
+/**
+ * POST /api/v1/worker/tokens/complete
+ */
+router.post('/tokens/complete', requireAuth, async (req, res) => {
   try {
-    const { ticketId, workerId, counterId } = req.body;
+    const { ticketId } = req.body;
+    const isTestBypass = process.env.NODE_ENV === 'test' && process.env.TEST_AUTH_BYPASS === 'true';
+    let { workerId, counterId } = req.body;
+
+    if (!isTestBypass) {
+      const worker = await resolveStaffWorker(req);
+      if (!worker) return res.status(403).json({ error: 'No worker profile found.' });
+      workerId = worker._id.toString();
+      counterId = counterId || worker.counterId?._id?.toString();
+    }
+
     const ticket = await queueService.completeService({ ticketId, workerId, counterId });
     res.json({ success: true, message: 'Service completed', ticket });
   } catch (err) {
@@ -345,10 +440,21 @@ router.post('/tokens/complete', async (req, res) => {
   }
 });
 
-// POST /api/v1/worker/tokens/snooze
-router.post('/tokens/snooze', async (req, res) => {
+/**
+ * POST /api/v1/worker/tokens/snooze
+ */
+router.post('/tokens/snooze', requireAuth, async (req, res) => {
   try {
-    const { ticketId, minutes, workerId } = req.body;
+    const { ticketId, minutes } = req.body;
+    const isTestBypass = process.env.NODE_ENV === 'test' && process.env.TEST_AUTH_BYPASS === 'true';
+    let workerId = req.body.workerId;
+
+    if (!isTestBypass) {
+      const worker = await resolveStaffWorker(req);
+      if (!worker) return res.status(403).json({ error: 'No worker profile found.' });
+      workerId = worker._id.toString();
+    }
+
     const ticket = await queueService.snoozeTicket({
       ticketId,
       minutes: Number(minutes) || 5,
@@ -361,10 +467,21 @@ router.post('/tokens/snooze', async (req, res) => {
   }
 });
 
-// POST /api/v1/worker/tokens/resume
-router.post('/tokens/resume', async (req, res) => {
+/**
+ * POST /api/v1/worker/tokens/resume
+ */
+router.post('/tokens/resume', requireAuth, async (req, res) => {
   try {
-    const { ticketId, workerId } = req.body;
+    const { ticketId } = req.body;
+    const isTestBypass = process.env.NODE_ENV === 'test' && process.env.TEST_AUTH_BYPASS === 'true';
+    let workerId = req.body.workerId;
+
+    if (!isTestBypass) {
+      const worker = await resolveStaffWorker(req);
+      if (!worker) return res.status(403).json({ error: 'No worker profile found.' });
+      workerId = worker._id.toString();
+    }
+
     const ticket = await queueService.resumeTicket({ ticketId, workerId });
     res.json({ success: true, message: 'Ticket resumed to WAITING', ticket });
   } catch (err) {
@@ -372,10 +489,22 @@ router.post('/tokens/resume', async (req, res) => {
   }
 });
 
-// POST /api/v1/worker/tokens/recall
-router.post('/tokens/recall', async (req, res) => {
+/**
+ * POST /api/v1/worker/tokens/recall
+ */
+router.post('/tokens/recall', requireAuth, async (req, res) => {
   try {
-    const { ticketId, workerId, counterId } = req.body;
+    const { ticketId } = req.body;
+    const isTestBypass = process.env.NODE_ENV === 'test' && process.env.TEST_AUTH_BYPASS === 'true';
+    let { workerId, counterId } = req.body;
+
+    if (!isTestBypass) {
+      const worker = await resolveStaffWorker(req);
+      if (!worker) return res.status(403).json({ error: 'No worker profile found.' });
+      workerId = worker._id.toString();
+      counterId = counterId || worker.counterId?._id?.toString();
+    }
+
     const ticket = await queueService.recallTicket({ ticketId, workerId, counterId });
     res.json({ success: true, message: 'Ticket recalled', ticket });
   } catch (err) {
@@ -383,10 +512,22 @@ router.post('/tokens/recall', async (req, res) => {
   }
 });
 
-// POST /api/v1/worker/tokens/skip
-router.post('/tokens/skip', async (req, res) => {
+/**
+ * POST /api/v1/worker/tokens/skip
+ */
+router.post('/tokens/skip', requireAuth, async (req, res) => {
   try {
-    const { ticketId, workerId, counterId } = req.body;
+    const { ticketId } = req.body;
+    const isTestBypass = process.env.NODE_ENV === 'test' && process.env.TEST_AUTH_BYPASS === 'true';
+    let { workerId, counterId } = req.body;
+
+    if (!isTestBypass) {
+      const worker = await resolveStaffWorker(req);
+      if (!worker) return res.status(403).json({ error: 'No worker profile found.' });
+      workerId = worker._id.toString();
+      counterId = counterId || worker.counterId?._id?.toString();
+    }
+
     const ticket = await queueService.skipTicket({ ticketId, workerId, counterId });
     res.json({ success: true, message: 'Ticket skipped', ticket });
   } catch (err) {
@@ -394,10 +535,22 @@ router.post('/tokens/skip', async (req, res) => {
   }
 });
 
-// POST /api/v1/worker/tokens/no-show
-router.post('/tokens/no-show', async (req, res) => {
+/**
+ * POST /api/v1/worker/tokens/no-show
+ */
+router.post('/tokens/no-show', requireAuth, async (req, res) => {
   try {
-    const { ticketId, workerId, counterId } = req.body;
+    const { ticketId } = req.body;
+    const isTestBypass = process.env.NODE_ENV === 'test' && process.env.TEST_AUTH_BYPASS === 'true';
+    let { workerId, counterId } = req.body;
+
+    if (!isTestBypass) {
+      const worker = await resolveStaffWorker(req);
+      if (!worker) return res.status(403).json({ error: 'No worker profile found.' });
+      workerId = worker._id.toString();
+      counterId = counterId || worker.counterId?._id?.toString();
+    }
+
     const ticket = await queueService.noShowTicket({ ticketId, workerId, counterId });
     res.json({ success: true, message: 'Ticket marked as no-show', ticket });
   } catch (err) {
@@ -405,14 +558,20 @@ router.post('/tokens/no-show', async (req, res) => {
   }
 });
 
-// GET /api/v1/worker/services (Legacy fallback)
-router.get('/services', async (req, res) => {
+/**
+ * GET /api/v1/worker/services (Legacy fallback — authenticated)
+ */
+router.get('/services', requireAuth, async (req, res) => {
   try {
     const services = await Service.find();
     res.json(services);
   } catch (err) {
-    res.status(500).json({ error: 'Failed to fetch services', details: err.message });
+    res.status(500).json({ error: 'Failed to fetch services.' });
   }
 });
+
+// NOTE: The /identity route has been REMOVED.
+// It was a dev-only route that auto-created workers for any orgId,
+// which is a critical security vulnerability. Use /me instead.
 
 module.exports = router;

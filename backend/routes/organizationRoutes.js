@@ -6,11 +6,12 @@ const Department = require('../models/Department');
 const Counter = require('../models/Counter');
 const Worker = require('../models/Worker');
 const Ticket = require('../models/Ticket');
+const { requireAuth, checkRole } = require('../middleware/authMiddleware');
 
 const isValidObjectId = (id) => mongoose.Types.ObjectId.isValid(id);
 
-// POST /api/v1/orgs - Create an organization (auto-generates apiKey if not supplied)
-router.post('/', async (req, res) => {
+// POST /api/v1/orgs - Create an organization (Master Admin only)
+router.post('/', requireAuth, checkRole(['master_admin']), async (req, res) => {
   try {
     const { name, type, address, apiKey, status } = req.body;
 
@@ -46,15 +47,20 @@ router.post('/', async (req, res) => {
   }
 });
 
-// GET /api/v1/orgs - Get all organizations (excludes deleted by default)
+// GET /api/v1/orgs - Get all organizations (excludes deleted by default; includeDeleted requires admin)
 router.get('/', async (req, res) => {
   try {
     const filter = { isDeleted: { $ne: true } };
     if (req.query.type) filter.type = req.query.type;
     if (req.query.status) filter.status = req.query.status;
-    // Allow admin to see deleted with ?includeDeleted=true
-    if (req.query.includeDeleted === 'true') {
-      delete filter.isDeleted;
+    // includeDeleted requires authentication and master_admin role
+    if (req.query.includeDeleted === 'true' && req.auth?.userId) {
+      // Only master_admin can see deleted orgs — silently ignore for others
+      const { resolveUserRole } = require('../middleware/authMiddleware');
+      const role = await resolveUserRole(req);
+      if (role === 'master_admin') {
+        delete filter.isDeleted;
+      }
     }
 
     const organizations = await Organization.find(filter).sort({ createdAt: -1 });
@@ -162,8 +168,8 @@ router.delete('/:orgId', async (req, res) => {
   }
 });
 
-// POST /api/v1/orgs/:orgId/departments - Create dynamic department under an organization
-router.post('/:orgId/departments', async (req, res) => {
+// POST /api/v1/orgs/:orgId/departments - Create department (Master Admin or Supervisor only)
+router.post('/:orgId/departments', requireAuth, checkRole(['master_admin', 'supervisor', 'org_admin']), async (req, res) => {
   try {
     const { orgId } = req.params;
     const { name, prefix, avgServiceTimeMins, subCounters, isEntryLevel, roomNumber } = req.body;
