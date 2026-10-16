@@ -20,7 +20,8 @@ import {
   Trash2,
   AlertTriangle,
   FolderTree,
-  Edit
+  Edit,
+  Users
 } from 'lucide-react';
 import {
   getOrganizations,
@@ -30,6 +31,7 @@ import {
   createDepartment,
   deleteOrganization
 } from '../services/organizationService';
+import StaffManagement from '../components/StaffManagement';
 
 export default function MasterAdminDashboard() {
   const [organizations, setOrganizations] = useState([]);
@@ -38,6 +40,7 @@ export default function MasterAdminDashboard() {
   const [refreshing, setRefreshing] = useState(false);
   const [expandedOrgId, setExpandedOrgId] = useState(null);
   const [copiedKeyId, setCopiedKeyId] = useState(null);
+  const [activeSection, setActiveSection] = useState('organizations'); // 'organizations' | 'staff'
 
   // Modals state
   const [isOrgModalOpen, setIsOrgModalOpen] = useState(false);
@@ -349,8 +352,41 @@ export default function MasterAdminDashboard() {
         </div>
       </div>
 
-      {/* ── Summary Stats Bar ── */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+      {/* ── Section Navigation Bar ── */}
+      <div className="flex items-center gap-2 border-b border-gray-200 pb-2">
+        <button
+          type="button"
+          onClick={() => setActiveSection('organizations')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${
+            activeSection === 'organizations'
+              ? 'bg-emerald-700 text-white shadow-2xs'
+              : 'text-gray-600 hover:text-neutral-900 hover:bg-gray-100'
+          }`}
+        >
+          <Building2 className="w-4 h-4" />
+          <span>Organizations & Service Departments</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveSection('staff')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${
+            activeSection === 'staff'
+              ? 'bg-emerald-700 text-white shadow-2xs'
+              : 'text-gray-600 hover:text-neutral-900 hover:bg-gray-100'
+          }`}
+        >
+          <Users className="w-4 h-4" />
+          <span>Staff Management & Access Requests</span>
+        </button>
+      </div>
+
+      {activeSection === 'staff' ? (
+        <StaffManagement />
+      ) : (
+        <>
+          {/* ── Summary Stats Bar ── */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <div className="bg-neutral-50 border border-neutral-200 rounded-xl p-4 flex items-center gap-3">
           <div className="w-10 h-10 rounded-lg bg-emerald-50 border border-emerald-200 flex items-center justify-center text-emerald-700">
             <Building2 className="w-5 h-5" />
@@ -576,6 +612,8 @@ export default function MasterAdminDashboard() {
             );
           })}
         </div>
+      )}
+        </>
       )}
 
       {/* ── Modal: Create / Edit Organization ── */}
