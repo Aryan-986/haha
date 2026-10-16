@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useUser, UserButton, SignInButton } from '@clerk/clerk-react';
+import { useUser, useAuth, UserButton, SignInButton } from '@clerk/clerk-react';
 import { ShieldCheck, User, Briefcase, Search, Activity, Clock, AlertCircle, LogIn, Lock, RefreshCw } from 'lucide-react';
 
 import CitizenDashboard from '../dashboards/CitizenDashboard';
@@ -9,9 +9,11 @@ import MasterAdminDashboard from '../dashboards/MasterAdminDashboard';
 import TicketTracker from '../components/TicketTracker';
 import AccessRequestForm from '../components/AccessRequestForm';
 import { getMyAccessStatus } from '../services/accessRequestService';
+import { setTokenGetter } from '../services/apiClient';
 
 export default function Dashboard() {
   const { user, isLoaded, isSignedIn } = useUser();
+  const { getToken } = useAuth();
   const [activeView, setActiveView] = useState('dashboard'); // 'dashboard' | 'tracker'
   const [selectedPortal, setSelectedPortal] = useState('citizen'); // 'citizen' | 'worker' | 'supervisor' | 'master_admin'
 
@@ -25,8 +27,27 @@ export default function Dashboard() {
     approvedMemberships: []
   });
 
+  // Calculate master admin status with direct email and publicMetadata resolution
+  const userEmails = [
+    user?.primaryEmailAddress?.emailAddress,
+    ...(user?.emailAddresses || []).map(e => e.emailAddress)
+  ].filter(Boolean).map(e => e.toLowerCase());
+
+  const isMasterAdminEmail = userEmails.includes('aryankarki984@gmail.com');
+  const isMasterAdminRole = user?.publicMetadata?.role === 'master_admin';
+  const isUserMasterAdmin = isMasterAdminEmail || isMasterAdminRole || accessStatus.isMasterAdmin;
+
+  useEffect(() => {
+    if (getToken) {
+      setTokenGetter(getToken);
+    }
+  }, [getToken]);
+
   useEffect(() => {
     if (isSignedIn) {
+      if (isUserMasterAdmin && selectedPortal === 'citizen') {
+        setSelectedPortal('master_admin');
+      }
       checkStatus();
     } else {
       setAccessStatus({
@@ -39,15 +60,15 @@ export default function Dashboard() {
       });
       setSelectedPortal('citizen');
     }
-  }, [isSignedIn, user?.id]);
+  }, [isSignedIn, user?.id, isUserMasterAdmin]);
 
   async function checkStatus() {
-    setAccessStatus(prev => ({ ...prev, loading: true }));
+    setAccessStatus(prev => ({ ...prev, loading: false }));
     try {
       const data = await getMyAccessStatus();
       setAccessStatus({
         loading: false,
-        isMasterAdmin: !!data.isMasterAdmin,
+        isMasterAdmin: isUserMasterAdmin || !!data.isMasterAdmin,
         hasApprovedAccess: !!data.hasApprovedAccess,
         role: data.role || null,
         pendingRequests: data.pendingRequests || [],
@@ -55,14 +76,19 @@ export default function Dashboard() {
       });
 
       // Auto-route on initial load if user has specific privileges
-      if (data.isMasterAdmin && selectedPortal === 'citizen') {
+      if ((isUserMasterAdmin || data.isMasterAdmin) && selectedPortal === 'citizen') {
         setSelectedPortal('master_admin');
       } else if (data.hasApprovedAccess && data.role && selectedPortal === 'citizen') {
         setSelectedPortal(data.role.toLowerCase());
       }
     } catch (err) {
-      console.warn('Failed to verify access status:', err.message);
-      setAccessStatus(prev => ({ ...prev, loading: false }));
+      console.warn('Failed to verify access status via API:', err.message);
+      // Fallback: preserve email/metadata admin status
+      setAccessStatus(prev => ({
+        ...prev,
+        loading: false,
+        isMasterAdmin: isUserMasterAdmin
+      }));
     }
   }
 
@@ -108,7 +134,7 @@ export default function Dashboard() {
 
     // 3. Master Admin Portal
     if (selectedPortal === 'master_admin') {
-      if (accessStatus.isMasterAdmin) {
+      if (isUserMasterAdmin) {
         return <MasterAdminDashboard />;
       }
       return (
@@ -132,7 +158,7 @@ export default function Dashboard() {
     // 4. Worker or Supervisor Portal
     if (selectedPortal === 'worker' || selectedPortal === 'supervisor') {
       // If user is Master Admin, grant seamless preview access
-      if (accessStatus.isMasterAdmin) {
+      if (isUserMasterAdmin) {
         return selectedPortal === 'worker' ? <WorkerDashboard /> : <SupervisorDashboard />;
       }
 
@@ -236,7 +262,7 @@ export default function Dashboard() {
               >
                 <ShieldCheck className="w-3.5 h-3.5" />
                 <span>Master Admin</span>
-                {accessStatus.isMasterAdmin && (
+                {isUserMasterAdmin && (
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
                 )}
               </button>

@@ -53,6 +53,8 @@ async function resolveUserRole(req) {
     return cached.role;
   }
 
+  const masterAdminEmail = (process.env.MASTER_ADMIN_EMAIL || 'aryankarki984@gmail.com').toLowerCase();
+
   // Resolve from Clerk Admin SDK (authoritative)
   if (!process.env.CLERK_SECRET_KEY) {
     // Clerk not configured — fall back to JWT claims only (dev convenience)
@@ -66,7 +68,26 @@ async function resolveUserRole(req) {
 
   try {
     const user = await clerkClient.users.getUser(userId);
-    const role = (user?.publicMetadata?.role || 'citizen').toLowerCase();
+    let role = (user?.publicMetadata?.role || 'citizen').toLowerCase();
+
+    // Authoritative bootstrap check by email
+    const hasAdminEmail = user?.emailAddresses?.some(
+      e => e.emailAddress?.toLowerCase() === masterAdminEmail
+    );
+
+    if (hasAdminEmail) {
+      role = 'master_admin';
+      if (user?.publicMetadata?.role !== 'master_admin') {
+        try {
+          await clerkClient.users.updateUserMetadata(userId, {
+            publicMetadata: { role: 'master_admin' }
+          });
+        } catch (mErr) {
+          console.warn('[Auth] Failed to sync master_admin metadata:', mErr.message);
+        }
+      }
+    }
+
     userCache.set(userId, { role, timestamp: Date.now() });
     return role;
   } catch (err) {

@@ -192,4 +192,6 @@ router.post('/:id/pause', requireAuth, checkRole(['master_admin', 'supervisor', 
   } catch (err) {
     res.status(err.status || 400).json({ success: false, error: err.message });
   }
+});
+
 module.exports = router;

@@ -20,6 +20,11 @@ export const apiClient = axios.create({
   }
 });
 
+let tokenGetter = null;
+export function setTokenGetter(fn) {
+  tokenGetter = fn;
+}
+
 // Interceptor: Normalizes URLs and attaches Clerk Bearer token
 apiClient.interceptors.request.use(async (config) => {
   try {
@@ -32,12 +37,21 @@ apiClient.interceptors.request.use(async (config) => {
       }
     }
 
-    // Automatically attach Clerk session token when user is signed in
-    if (typeof window !== 'undefined' && window.Clerk?.session) {
-      const token = await window.Clerk.session.getToken();
-      if (token) {
-        config.headers.Authorization = `Bearer ${token}`;
-      }
+    let token = null;
+    if (tokenGetter) {
+      try {
+        token = await tokenGetter();
+      } catch (err) {}
+    }
+
+    if (!token && typeof window !== 'undefined' && window.Clerk?.session) {
+      try {
+        token = await window.Clerk.session.getToken();
+      } catch (err) {}
+    }
+
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`;
     }
   } catch (err) {
     // Proceed without token if session is not ready
