@@ -1,3 +1,11 @@
+const dns = require('dns');
+// Use reliable public DNS (Google & Cloudflare) to prevent queryTxt ETIMEOUT on MongoDB Atlas SRV records
+try {
+  dns.setServers(['8.8.8.8', '1.1.1.1']);
+} catch (dnsErr) {
+  console.warn('Could not set custom DNS servers:', dnsErr.message);
+}
+
 const express = require('express');
 const http = require('http');
 const mongoose = require('mongoose');
