@@ -14,6 +14,12 @@ const { Server } = require('socket.io');
 
 let io = null;
 
+const allowedOrigins = process.env.CORS_ORIGIN
+  ? process.env.CORS_ORIGIN.split(',').map(s => s.trim())
+  : ['http://localhost:5173', 'http://localhost:5174', 'http://localhost:3000', 'http://127.0.0.1:5173'];
+
+const isProd = process.env.NODE_ENV === 'production';
+
 /**
  * Initialize Socket.io with the given HTTP server.
  * Must be called once during server startup.
@@ -21,16 +27,22 @@ let io = null;
 function initSocket(httpServer) {
   io = new Server(httpServer, {
     cors: {
-      origin: '*',
-      methods: ['GET', 'POST']
+      origin: (origin, callback) => {
+        if (!origin) return callback(null, true);
+        if (!isProd) return callback(null, true);
+        if (allowedOrigins.includes(origin)) return callback(null, true);
+        return callback(new Error('Blocked by Socket.IO CORS'));
+      },
+      methods: ['GET', 'POST'],
+      credentials: true
     }
   });
 
   io.on('connection', (socket) => {
-    // Client joins org+dept rooms to receive targeted updates
+    // Client joins org+dept rooms to receive targeted updates (must be valid IDs)
     socket.on('join_room', ({ orgId, deptId }) => {
-      if (orgId) socket.join(`org:${orgId}`);
-      if (deptId) socket.join(`dept:${deptId}`);
+      if (orgId && /^[a-fA-F0-9]{24}$/.test(String(orgId))) socket.join(`org:${orgId}`);
+      if (deptId && /^[a-fA-F0-9]{24}$/.test(String(deptId))) socket.join(`dept:${deptId}`);
     });
 
     socket.on('leave_room', ({ orgId, deptId }) => {
@@ -42,18 +54,18 @@ function initSocket(httpServer) {
     socket.on('switch_scope', ({ oldOrgId, oldDeptId, newOrgId, newDeptId }) => {
       if (oldOrgId) socket.leave(`org:${oldOrgId}`);
       if (oldDeptId) socket.leave(`dept:${oldDeptId}`);
-      if (newOrgId) socket.join(`org:${newOrgId}`);
-      if (newDeptId) socket.join(`dept:${newDeptId}`);
+      if (newOrgId && /^[a-fA-F0-9]{24}$/.test(String(newOrgId))) socket.join(`org:${newOrgId}`);
+      if (newDeptId && /^[a-fA-F0-9]{24}$/.test(String(newDeptId))) socket.join(`dept:${newDeptId}`);
     });
 
-    // Scoped subscription for citizen ticket tracking
-    socket.on('join_ticket', ({ ticketId, trackingToken }) => {
-      if (ticketId) socket.join(`ticket:${ticketId}`);
-      if (trackingToken) socket.join(`ticket:${trackingToken}`);
+    // Scoped subscription for citizen ticket tracking — enforce trackingToken
+    socket.on('join_ticket', ({ trackingToken }) => {
+      if (trackingToken && typeof trackingToken === 'string' && trackingToken.length >= 8) {
+        socket.join(`ticket:${trackingToken}`);
+      }
     });
 
-    socket.on('leave_ticket', ({ ticketId, trackingToken }) => {
-      if (ticketId) socket.leave(`ticket:${ticketId}`);
+    socket.on('leave_ticket', ({ trackingToken }) => {
       if (trackingToken) socket.leave(`ticket:${trackingToken}`);
     });
 

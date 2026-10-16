@@ -264,9 +264,12 @@ router.post('/analyze', async (req, res) => {
 });
 
 // =======================================================================
-// POST /api/admin/sim-update - Live Simulation Endpoint
+// POST /api/admin/sim-update - Live Simulation Endpoint (Master Admin only; blocked in production)
 // =======================================================================
-router.post('/admin/sim-update', async (req, res) => {
+router.post('/admin/sim-update', requireAuth, checkRole(['master_admin']), async (req, res) => {
+  if (process.env.NODE_ENV === 'production' && !process.env.ALLOW_SIMULATOR) {
+    return res.status(403).json({ error: 'Simulator endpoint is disabled in production' });
+  }
   try {
     const { serviceId, queueChange, activeCountersChange, currentlyServingChange } = req.body;
 

@@ -23,6 +23,13 @@ const workerSchema = new mongoose.Schema({
     sparse: true,
     index: true
   },
+  email: {
+    type: String,
+    trim: true,
+    lowercase: true,
+    sparse: true,
+    index: true
+  },
   name: {
     type: String,
     required: true,
@@ -35,7 +42,7 @@ const workerSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['AVAILABLE', 'BUSY', 'OFFLINE', 'ON_BREAK'],
+    enum: ['AVAILABLE', 'BUSY', 'OFFLINE', 'ON_BREAK', 'DEACTIVATED'],
     default: 'AVAILABLE',
     index: true
   },

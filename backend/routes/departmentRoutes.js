@@ -10,10 +10,11 @@ const queueService = require('../services/queueService');
 const counterService = require('../services/counterService');
 const Counter = require('../models/Counter');
 const Department = require('../models/Department');
+const { requireAuth, checkRole } = require('../middleware/authMiddleware');
 
 const isValidObjectId = (id) => mongoose.Types.ObjectId.isValid(id);
 
-// GET /api/v1/departments/:id/queue - Live queue metrics for department
+// GET /api/v1/departments/:id/queue - Live queue metrics for department (public/display OK)
 router.get('/:id/queue', async (req, res) => {
   try {
     const { id } = req.params;
@@ -26,8 +27,8 @@ router.get('/:id/queue', async (req, res) => {
   }
 });
 
-// GET /api/v1/departments/:id/live - Supervisor full live view with alerts
-router.get('/:id/live', async (req, res) => {
+// GET /api/v1/departments/:id/live - Supervisor full live view with alerts (Staff only)
+router.get('/:id/live', requireAuth, checkRole(['master_admin', 'supervisor', 'org_admin']), async (req, res) => {
   try {
     const { id } = req.params;
     const { orgId } = req.query;
@@ -39,8 +40,8 @@ router.get('/:id/live', async (req, res) => {
   }
 });
 
-// POST /api/v1/departments/:id/call-next - Atomically call next ticket
-router.post('/:id/call-next', async (req, res) => {
+// POST /api/v1/departments/:id/call-next - Atomically call next ticket (Staff only)
+router.post('/:id/call-next', requireAuth, checkRole(['master_admin', 'supervisor', 'org_admin', 'worker']), async (req, res) => {
   try {
     const { id } = req.params;
     const { orgId, counterId, workerId, roomId } = req.body;
@@ -75,8 +76,8 @@ router.get('/:id/counters', async (req, res) => {
   }
 });
 
-// POST /api/v1/departments/:id/counters - Create counter under department
-router.post('/:id/counters', async (req, res) => {
+// POST /api/v1/departments/:id/counters - Create counter under department (Admin/Supervisor only)
+router.post('/:id/counters', requireAuth, checkRole(['master_admin', 'supervisor', 'org_admin']), async (req, res) => {
   try {
     const { id } = req.params;
     const { counterNumber, name, organizationId, roomNumber } = req.body;

@@ -935,4 +935,31 @@ router.post('/staff/:id/revoke', requireAuth, checkRole(['master_admin']), async
   }
 });
 
+/**
+ * GET /api/v1/access-requests/audit-logs — List audit logs (admin only)
+ */
+router.get('/audit-logs', requireAuth, checkRole(['master_admin']), async (req, res) => {
+  try {
+    const { action, organizationId, page = 1, limit = 50 } = req.query;
+    const filter = {};
+    if (action) filter.action = action;
+    if (organizationId && isValidObjectId(organizationId)) filter.organizationId = organizationId;
+
+    const skip = (Math.max(1, parseInt(page)) - 1) * parseInt(limit);
+    const [logs, total] = await Promise.all([
+      AuditLog.find(filter)
+        .populate('organizationId', 'name')
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(parseInt(limit)),
+      AuditLog.countDocuments(filter)
+    ]);
+
+    res.json({ success: true, logs, total, page: parseInt(page), limit: parseInt(limit) });
+  } catch (err) {
+    console.error('Error fetching audit logs:', err);
+    res.status(500).json({ success: false, error: 'Failed to fetch audit logs.' });
+  }
+});
+
 module.exports = router;

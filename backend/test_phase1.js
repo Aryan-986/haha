@@ -186,7 +186,7 @@ async function runTests() {
     let crossTenantBlocked = false;
     try {
       await queueService.transferTicket({
-        ticketId: claim1.ticket._id,
+        ticketId: claim2.ticket._id,
         targetDepartmentId: deptB1._id,
         workerId: worker1._id
       });

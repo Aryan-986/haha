@@ -193,6 +193,7 @@ const ticketRoutes = require('./routes/ticketRoutes');
 const departmentRoutes = require('./routes/departmentRoutes');
 const counterRoutes = require('./routes/counterRoutes');
 const adminRoutes = require('./routes/adminRoutes');
+const accessRequestRoutes = require('./routes/accessRequestRoutes');
 
 // Primary canonical versioned API
 app.use('/api/v1', queueRoutes);
@@ -202,6 +203,7 @@ app.use('/api/v1/tickets', ticketRoutes);
 app.use('/api/v1/departments', departmentRoutes);
 app.use('/api/v1/counters', counterRoutes);
 app.use('/api/v1/admin', adminRoutes);
+app.use('/api/v1/access-requests', accessRequestRoutes);
 
 // Legacy aliases (deprecated — clients should migrate to /api/v1)
 // These are intentionally kept so existing frontend code doesn't break
@@ -214,6 +216,7 @@ app.use('/api/tickets', ticketRoutes);
 app.use('/api/departments', departmentRoutes);
 app.use('/api/counters', counterRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/access-requests', accessRequestRoutes);
 
 // ============================================================
 // Global Error Handler

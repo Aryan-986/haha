@@ -16,6 +16,7 @@ const router = express.Router();
 const mongoose = require('mongoose');
 const Counter = require('../models/Counter');
 const counterService = require('../services/counterService');
+const { requireAuth, checkRole } = require('../middleware/authMiddleware');
 
 const isValidObjectId = (id) => mongoose.Types.ObjectId.isValid(id);
 
@@ -23,7 +24,7 @@ const isValidObjectId = (id) => mongoose.Types.ObjectId.isValid(id);
 const getOrgId = (req) => req.body?.organizationId || req.query?.organizationId || null;
 const getWorkerId = (req) => req.body?.workerId || req.query?.workerId || null;
 
-// GET /api/v1/counters?organizationId=&departmentId=
+// GET /api/v1/counters?organizationId=&departmentId= (Public/read)
 router.get('/', async (req, res) => {
   try {
     const { organizationId, departmentId } = req.query;
@@ -56,8 +57,8 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-// POST /api/v1/counters - Create counter
-router.post('/', async (req, res) => {
+// POST /api/v1/counters - Create counter (Admin/Supervisor only)
+router.post('/', requireAuth, checkRole(['master_admin', 'supervisor', 'org_admin']), async (req, res) => {
   try {
     const { organizationId, departmentId, counterNumber, name, roomNumber } = req.body;
     if (!organizationId || !departmentId || !counterNumber) {
@@ -71,8 +72,8 @@ router.post('/', async (req, res) => {
   }
 });
 
-// PATCH /api/v1/counters/:id - Update counter name/number/roomNumber
-router.patch('/:id', async (req, res) => {
+// PATCH /api/v1/counters/:id - Update counter (Admin/Supervisor only)
+router.patch('/:id', requireAuth, checkRole(['master_admin', 'supervisor', 'org_admin']), async (req, res) => {
   try {
     const { name, counterNumber, roomNumber } = req.body;
     const updates = {};
@@ -88,8 +89,8 @@ router.patch('/:id', async (req, res) => {
   }
 });
 
-// POST /api/v1/counters/:id/assign-worker
-router.post('/:id/assign-worker', async (req, res) => {
+// POST /api/v1/counters/:id/assign-worker (Admin/Supervisor only)
+router.post('/:id/assign-worker', requireAuth, checkRole(['master_admin', 'supervisor', 'org_admin']), async (req, res) => {
   try {
     const { workerId, organizationId } = req.body;
     if (!workerId || !organizationId) {
@@ -107,8 +108,8 @@ router.post('/:id/assign-worker', async (req, res) => {
   }
 });
 
-// POST /api/v1/counters/:id/unassign-worker
-router.post('/:id/unassign-worker', async (req, res) => {
+// POST /api/v1/counters/:id/unassign-worker (Admin/Supervisor only)
+router.post('/:id/unassign-worker', requireAuth, checkRole(['master_admin', 'supervisor', 'org_admin']), async (req, res) => {
   try {
     const organizationId = getOrgId(req);
     const counter = await counterService.unassignWorker({
@@ -121,8 +122,8 @@ router.post('/:id/unassign-worker', async (req, res) => {
   }
 });
 
-// POST /api/v1/counters/:id/activate
-router.post('/:id/activate', async (req, res) => {
+// POST /api/v1/counters/:id/activate (Admin/Supervisor only)
+router.post('/:id/activate', requireAuth, checkRole(['master_admin', 'supervisor', 'org_admin']), async (req, res) => {
   try {
     const organizationId = getOrgId(req);
     const counter = await counterService.activateCounter({
@@ -135,8 +136,8 @@ router.post('/:id/activate', async (req, res) => {
   }
 });
 
-// POST /api/v1/counters/:id/break
-router.post('/:id/break', async (req, res) => {
+// POST /api/v1/counters/:id/break (Staff)
+router.post('/:id/break', requireAuth, checkRole(['master_admin', 'supervisor', 'org_admin', 'worker']), async (req, res) => {
   try {
     const { organizationId, workerId } = req.body;
     const counter = await counterService.counterBreak({
@@ -150,8 +151,8 @@ router.post('/:id/break', async (req, res) => {
   }
 });
 
-// POST /api/v1/counters/:id/resume
-router.post('/:id/resume', async (req, res) => {
+// POST /api/v1/counters/:id/resume (Staff)
+router.post('/:id/resume', requireAuth, checkRole(['master_admin', 'supervisor', 'org_admin', 'worker']), async (req, res) => {
   try {
     const { organizationId, workerId } = req.body;
     const counter = await counterService.resumeCounter({
@@ -165,8 +166,8 @@ router.post('/:id/resume', async (req, res) => {
   }
 });
 
-// POST /api/v1/counters/:id/offline
-router.post('/:id/offline', async (req, res) => {
+// POST /api/v1/counters/:id/offline (Staff)
+router.post('/:id/offline', requireAuth, checkRole(['master_admin', 'supervisor', 'org_admin', 'worker']), async (req, res) => {
   try {
     const organizationId = getOrgId(req);
     const counter = await counterService.offlineCounter({
@@ -179,8 +180,8 @@ router.post('/:id/offline', async (req, res) => {
   }
 });
 
-// POST /api/v1/counters/:id/pause
-router.post('/:id/pause', async (req, res) => {
+// POST /api/v1/counters/:id/pause (Staff)
+router.post('/:id/pause', requireAuth, checkRole(['master_admin', 'supervisor', 'org_admin', 'worker']), async (req, res) => {
   try {
     const organizationId = getOrgId(req);
     const counter = await counterService.pauseCounter({
@@ -191,6 +192,4 @@ router.post('/:id/pause', async (req, res) => {
   } catch (err) {
     res.status(err.status || 400).json({ success: false, error: err.message });
   }
-});
-
 module.exports = router;
