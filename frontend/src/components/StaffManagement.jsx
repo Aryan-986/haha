@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import {
   Users, UserCheck, Clock, CheckCircle2, XCircle, Search, Filter,
   ShieldAlert, RefreshCw, AlertTriangle, Eye, ChevronRight, Building2,
-  Lock, Ban, Check, History, Sparkles
+  Lock, Ban, Check, History, Sparkles, Plus, DoorOpen
 } from 'lucide-react';
 import {
   getAccessRequests, approveAccessRequest, rejectAccessRequest,
@@ -11,6 +11,7 @@ import {
 } from '../services/accessRequestService';
 import { getOrganizations } from '../services/organizationService';
 import apiClient from '../services/apiClient';
+import DepartmentLocationManager from './DepartmentLocationManager';
 
 export default function StaffManagement() {
   const [subTab, setSubTab] = useState('requests'); // 'requests' | 'staff' | 'history'
@@ -61,6 +62,17 @@ export default function StaffManagement() {
   const [countersForDept, setCountersForDept] = useState([]);
   const [processingAction, setProcessingAction] = useState(false);
   const [feedback, setFeedback] = useState(null); // { type: 'success' | 'error', message }
+
+  // Quick counter creation & location manager state
+  const [locationManagerOpen, setLocationManagerOpen] = useState(false);
+  const [showQuickAddCounter, setShowQuickAddCounter] = useState(false);
+  const [quickCounterForm, setQuickCounterForm] = useState({
+    counterNumber: '',
+    name: '',
+    roomNumber: ''
+  });
+  const [quickCounterSubmitting, setQuickCounterSubmitting] = useState(false);
+  const [quickCounterError, setQuickCounterError] = useState('');
 
   useEffect(() => {
     loadOrganizations();
@@ -157,6 +169,38 @@ export default function StaffManagement() {
       setCountersForDept(Array.isArray(counters) ? counters : []);
     } catch (err) {
       setCountersForDept([]);
+    }
+  }
+
+  async function handleQuickCreateCounter(e) {
+    if (e) e.preventDefault();
+    if (!approvalData.departmentId) return;
+    if (!quickCounterForm.counterNumber) {
+      setQuickCounterError('Counter number is required');
+      return;
+    }
+    setQuickCounterSubmitting(true);
+    setQuickCounterError('');
+    try {
+      const res = await apiClient.post(`/departments/${approvalData.departmentId}/counters`, {
+        counterNumber: parseInt(quickCounterForm.counterNumber, 10),
+        name: quickCounterForm.name.trim() || `Counter ${quickCounterForm.counterNumber}`,
+        roomNumber: quickCounterForm.roomNumber.trim() || undefined,
+        status: 'ACTIVE',
+        isActive: true
+      });
+      const newCounter = res.data?.counter;
+      await loadCounters(approvalData.departmentId);
+      if (newCounter?._id) {
+        setApprovalData(prev => ({ ...prev, counterId: newCounter._id }));
+      }
+      setShowQuickAddCounter(false);
+      setQuickCounterForm({ counterNumber: '', name: '', roomNumber: '' });
+      setFeedback({ type: 'success', message: `Created and assigned Counter ${newCounter?.counterNumber || ''}!` });
+    } catch (err) {
+      setQuickCounterError(err.response?.data?.error || err.message || 'Failed to create counter');
+    } finally {
+      setQuickCounterSubmitting(false);
     }
   }
 
@@ -745,27 +789,124 @@ export default function StaffManagement() {
               </div>
 
               {approvalData.approvedRole === 'WORKER' && (
-                <div>
-                  <label className="block text-xs font-semibold uppercase text-gray-700 mb-1">
-                    Assigned Counter *
-                  </label>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="block text-xs font-semibold uppercase text-gray-700">
+                      Assigned Counter
+                    </label>
+                    {approvalData.departmentId && (
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowQuickAddCounter(!showQuickAddCounter);
+                            setQuickCounterError('');
+                          }}
+                          className="text-xs font-semibold text-emerald-700 hover:text-emerald-800 hover:underline flex items-center gap-1 cursor-pointer"
+                        >
+                          <Plus className="w-3 h-3" />
+                          <span>{showQuickAddCounter ? 'Hide Form' : 'Quick Add Counter'}</span>
+                        </button>
+                        <span className="text-gray-300">|</span>
+                        <button
+                          type="button"
+                          onClick={() => setLocationManagerOpen(true)}
+                          className="text-xs font-semibold text-neutral-600 hover:text-neutral-900 hover:underline flex items-center gap-1 cursor-pointer"
+                        >
+                          <DoorOpen className="w-3 h-3" />
+                          <span>Manage Rooms & Counters</span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Inline Quick Add Counter form */}
+                  {showQuickAddCounter && approvalData.departmentId && (
+                    <div className="p-3 bg-neutral-50 rounded-lg border border-neutral-200 space-y-2.5">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-bold text-neutral-800">Quick-Add Counter to Department</span>
+                        <span className="text-[10px] text-neutral-500">Auto-selects on creation</span>
+                      </div>
+                      {quickCounterError && (
+                        <p className="text-xs text-red-600">{quickCounterError}</p>
+                      )}
+                      <div className="grid grid-cols-3 gap-2">
+                        <div>
+                          <label className="block text-[10px] font-semibold text-neutral-600 mb-0.5">Counter # *</label>
+                          <input
+                            type="number"
+                            min="1"
+                            value={quickCounterForm.counterNumber}
+                            onChange={e => setQuickCounterForm({ ...quickCounterForm, counterNumber: e.target.value })}
+                            placeholder="e.g. 1"
+                            className="w-full text-xs border border-neutral-300 rounded p-1.5 bg-white"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-semibold text-neutral-600 mb-0.5">Name / Desk</label>
+                          <input
+                            type="text"
+                            value={quickCounterForm.name}
+                            onChange={e => setQuickCounterForm({ ...quickCounterForm, name: e.target.value })}
+                            placeholder="e.g. Registration Desk"
+                            className="w-full text-xs border border-neutral-300 rounded p-1.5 bg-white"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-semibold text-neutral-600 mb-0.5">Room #</label>
+                          <input
+                            type="text"
+                            value={quickCounterForm.roomNumber}
+                            onChange={e => setQuickCounterForm({ ...quickCounterForm, roomNumber: e.target.value })}
+                            placeholder="e.g. 101"
+                            className="w-full text-xs border border-neutral-300 rounded p-1.5 bg-white"
+                          />
+                        </div>
+                      </div>
+                      <div className="flex justify-end gap-2 pt-1">
+                        <button
+                          type="button"
+                          onClick={() => setShowQuickAddCounter(false)}
+                          className="px-2.5 py-1 text-xs text-neutral-600 hover:bg-neutral-200 rounded cursor-pointer"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleQuickCreateCounter}
+                          disabled={quickCounterSubmitting || !quickCounterForm.counterNumber}
+                          className="px-3 py-1 text-xs font-semibold bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 text-white rounded cursor-pointer"
+                        >
+                          {quickCounterSubmitting ? 'Creating...' : 'Save & Select'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
                   <select
                     value={approvalData.counterId}
                     onChange={e => setApprovalData({ ...approvalData, counterId: e.target.value })}
                     className="w-full text-sm border border-gray-300 rounded-lg p-2 bg-white focus:outline-none focus:ring-1 focus:ring-emerald-600"
-                    required
                   >
-                    <option value="">-- Select Counter --</option>
+                    <option value="">-- General Department Worker (No fixed counter) --</option>
                     {countersForDept.map(counter => (
                       <option key={counter._id} value={counter._id}>
-                        {counter.name || `Counter ${counter.counterNumber}`}
+                        {counter.name || `Counter ${counter.counterNumber}`} [Room {counter.roomNumber || 'N/A'}] — {counter.status || (counter.isActive ? 'ACTIVE' : 'INACTIVE')}
                       </option>
                     ))}
                   </select>
+
                   {countersForDept.length === 0 && approvalData.departmentId && (
-                    <p className="text-[11px] text-amber-600 mt-1">
-                      No counters exist in this department. A counter will be automatically provisioned upon approval.
-                    </p>
+                    <div className="p-2.5 rounded-lg bg-amber-50 border border-amber-200 flex items-center justify-between text-xs text-amber-800">
+                      <span>No counters configured yet in this department.</span>
+                      <button
+                        type="button"
+                        onClick={() => setShowQuickAddCounter(true)}
+                        className="text-xs font-bold text-amber-900 underline ml-2 cursor-pointer"
+                      >
+                        + Create Counter Now
+                      </button>
+                    </div>
                   )}
                 </div>
               )}
@@ -900,6 +1041,21 @@ export default function StaffManagement() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Department Location Manager (Rooms & Counters) Modal */}
+      {locationManagerOpen && selectedRequest && approvalData.departmentId && (
+        <DepartmentLocationManager
+          isOpen={locationManagerOpen}
+          onClose={() => setLocationManagerOpen(false)}
+          organization={{ _id: selectedRequest.organizationId?._id || selectedRequest.organizationId }}
+          department={departmentsForOrg.find(d => d._id === approvalData.departmentId)}
+          onDepartmentUpdated={async () => {
+            if (approvalData.departmentId) {
+              await loadCounters(approvalData.departmentId);
+            }
+          }}
+        />
       )}
     </div>
   );

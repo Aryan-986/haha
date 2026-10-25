@@ -147,7 +147,10 @@ const ticketSchema = new mongoose.Schema({
   transferInfo: {
     fromDepartmentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Department', default: null },
     toDepartmentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Department', default: null },
+    targetCounterId: { type: mongoose.Schema.Types.ObjectId, ref: 'Counter', default: null },
+    targetCounterName: { type: String, default: null },
     transferredBy: { type: String, default: null },
+    reason: { type: String, default: null },
     transferredAt: { type: Date, default: null }
   },
   history: {

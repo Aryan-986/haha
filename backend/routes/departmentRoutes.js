@@ -80,7 +80,7 @@ router.get('/:id/counters', async (req, res) => {
 router.post('/:id/counters', requireAuth, checkRole(['master_admin', 'supervisor', 'org_admin']), async (req, res) => {
   try {
     const { id } = req.params;
-    const { counterNumber, name, organizationId, roomNumber } = req.body;
+    const { counterNumber, name, organizationId, roomNumber, status, isActive } = req.body;
     if (!isValidObjectId(id)) return res.status(400).json({ error: 'Invalid department ID' });
 
     const dept = await Department.findById(id);
@@ -91,13 +91,15 @@ router.post('/:id/counters', requireAuth, checkRole(['master_admin', 'supervisor
       departmentId: id,
       counterNumber: Number(counterNumber) || 1,
       name: name || `Counter ${counterNumber || 1}`,
-      roomNumber: roomNumber !== undefined ? roomNumber : dept.roomNumber
+      roomNumber: roomNumber !== undefined ? roomNumber : dept.roomNumber,
+      status: status || undefined,
+      isActive: isActive !== undefined ? isActive : undefined
     });
 
     res.status(201).json({ success: true, counter });
   } catch (err) {
     console.error('Error in POST /departments/:id/counters:', err);
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message });
   }
 });
 

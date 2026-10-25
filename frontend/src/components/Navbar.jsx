@@ -10,7 +10,7 @@ export default function Navbar() {
         </div>
         <div>
           <h1 className="font-bold text-xl tracking-tight bg-gradient-to-r from-white to-slate-400 bg-clip-text text-transparent">
-            QueueLess
+            QueueLesss
           </h1>
           <p className="text-xs text-slate-400">AI Crowd & Queue Intelligence</p>
         </div>
