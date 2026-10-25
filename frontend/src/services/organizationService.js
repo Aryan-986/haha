@@ -5,7 +5,7 @@ import { apiClient } from './apiClient';
  * @param {Object} [params] - Optional query params like { type, status }
  */
 export async function getOrganizations(params = {}) {
-  const response = await apiClient.get('/api/v1/orgs', { params });
+  const response = await apiClient.get('/orgs', { params });
   return response.data;
 }
 
@@ -14,7 +14,7 @@ export async function getOrganizations(params = {}) {
  * @param {Object} orgData - { name, type, address }
  */
 export async function createOrganization(orgData) {
-  const response = await apiClient.post('/api/v1/orgs', orgData);
+  const response = await apiClient.post('/orgs', orgData);
   return response.data;
 }
 
@@ -24,7 +24,7 @@ export async function createOrganization(orgData) {
  * @param {Object} orgData - { name, type, address, status }
  */
 export async function updateOrganization(orgId, orgData) {
-  const response = await apiClient.put(`/api/v1/orgs/${orgId}`, orgData);
+  const response = await apiClient.put(`/orgs/${orgId}`, orgData);
   return response.data;
 }
 
@@ -33,7 +33,7 @@ export async function updateOrganization(orgId, orgData) {
  * @param {string} orgId - Organization MongoDB ID
  */
 export async function getDepartments(orgId) {
-  const response = await apiClient.get(`/api/v1/orgs/${orgId}/departments`);
+  const response = await apiClient.get(`/orgs/${orgId}/departments`);
   return response.data;
 }
 
@@ -43,7 +43,7 @@ export async function getDepartments(orgId) {
  * @param {Object} deptData - { name, prefix, avgServiceTimeMins, subCounters, isEntryLevel, roomNumber }
  */
 export async function createDepartment(orgId, deptData) {
-  const response = await apiClient.post(`/api/v1/orgs/${orgId}/departments`, deptData);
+  const response = await apiClient.post(`/orgs/${orgId}/departments`, deptData);
   return response.data;
 }
 
@@ -52,7 +52,7 @@ export async function createDepartment(orgId, deptData) {
  * @param {string} orgId - Organization MongoDB ID
  */
 export async function deleteOrganization(orgId) {
-  const response = await apiClient.delete(`/api/v1/orgs/${orgId}`);
+  const response = await apiClient.delete(`/orgs/${orgId}`);
   return response.data;
 }
 

@@ -143,11 +143,9 @@ router.get('/track/:trackingToken', async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * GET /api/v1/tickets/:id - Get full ticket details.
- * Requires authentication — raw ticket IDs must not be publicly accessible
- * (citizens use /track/:trackingToken instead).
+ * GET /api/v1/tickets/:id - Get full ticket details (public for citizen tracking).
  */
-router.get('/:id', requireAuth, async (req, res) => {
+router.get('/:id', async (req, res) => {
   try {
     const { id } = req.params;
     let ticket = null;
@@ -187,9 +185,9 @@ router.get('/:id', requireAuth, async (req, res) => {
 });
 
 /**
- * GET /api/v1/tickets/:id/position
+ * GET /api/v1/tickets/:id/position (public)
  */
-router.get('/:id/position', requireAuth, async (req, res) => {
+router.get('/:id/position', async (req, res) => {
   try {
     const { id } = req.params;
     let ticketId = id;
@@ -208,9 +206,9 @@ router.get('/:id/position', requireAuth, async (req, res) => {
 });
 
 /**
- * GET /api/v1/tickets/:id/eta
+ * GET /api/v1/tickets/:id/eta (public)
  */
-router.get('/:id/eta', requireAuth, async (req, res) => {
+router.get('/:id/eta', async (req, res) => {
   try {
     const { id } = req.params;
     let ticketId = id;
@@ -229,9 +227,9 @@ router.get('/:id/eta', requireAuth, async (req, res) => {
 });
 
 /**
- * GET /api/v1/tickets/:id/journey
+ * GET /api/v1/tickets/:id/journey (public)
  */
-router.get('/:id/journey', requireAuth, async (req, res) => {
+router.get('/:id/journey', async (req, res) => {
   try {
     const { id } = req.params;
     let ticketId = id;
@@ -250,9 +248,9 @@ router.get('/:id/journey', requireAuth, async (req, res) => {
 });
 
 /**
- * GET /api/v1/tickets/:id/events - Immutable audit timeline (citizen-safe fields)
+ * GET /api/v1/tickets/:id/events - Immutable audit timeline (citizen-safe fields, public)
  */
-router.get('/:id/events', requireAuth, async (req, res) => {
+router.get('/:id/events', async (req, res) => {
   try {
     const { id } = req.params;
     let ticketId = id;

@@ -44,7 +44,12 @@ export default function Dashboard() {
   }, [getToken]);
 
   useEffect(() => {
+    if (!isLoaded) return;
+
     if (isSignedIn) {
+      if (getToken) {
+        setTokenGetter(getToken);
+      }
       if (isUserMasterAdmin && selectedPortal === 'citizen') {
         setSelectedPortal('master_admin');
       }
@@ -60,7 +65,7 @@ export default function Dashboard() {
       });
       setSelectedPortal('citizen');
     }
-  }, [isSignedIn, user?.id, isUserMasterAdmin]);
+  }, [isLoaded, isSignedIn, user?.id, isUserMasterAdmin, getToken]);
 
   async function checkStatus() {
     setAccessStatus(prev => ({ ...prev, loading: false }));

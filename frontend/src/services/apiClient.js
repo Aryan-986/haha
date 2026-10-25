@@ -29,11 +29,12 @@ export function setTokenGetter(fn) {
 apiClient.interceptors.request.use(async (config) => {
   try {
     // URL Normalization: Prevent double `/api/v1/api/v1` prefix
+    // Since baseURL already ends with /api/v1, strip it from the request URL
     if (config.url) {
-      if (config.url.startsWith('/api/v1/')) {
-        config.url = config.url.replace('/api/v1', '');
-      } else if (config.url === '/api/v1') {
-        config.url = '/';
+      config.url = config.url.replace(/^\/api\/v1\/?/, '/');
+      // Ensure leading slash
+      if (config.url && !config.url.startsWith('/') && !config.url.startsWith('http')) {
+        config.url = '/' + config.url;
       }
     }
 

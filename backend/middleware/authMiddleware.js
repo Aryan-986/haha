@@ -9,7 +9,7 @@
  * - No identity fallbacks based on query parameters or request bodies
  */
 
-const { clerkClient } = require('@clerk/express');
+const { clerkClient, getAuth } = require('@clerk/express');
 const Worker = require('../models/Worker');
 
 // In-memory cache for user metadata (avoids redundant Clerk SDK calls)
@@ -22,7 +22,16 @@ const CACHE_TTL_MS = 60_000;
  * Returns null if no valid session is present.
  */
 function getAuthenticatedUserId(req) {
-  return req.auth?.userId || null;
+  // Try direct access first (most common in @clerk/express v2)
+  if (req.auth?.userId) return req.auth.userId;
+
+  // Fallback: use Clerk SDK's getAuth() for reliable extraction
+  try {
+    const authState = getAuth(req);
+    return authState?.userId || null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -139,10 +148,17 @@ const requireAuth = (req, res, next) => {
     return next();
   }
 
-  if (!req.auth?.userId) {
+  const userId = getAuthenticatedUserId(req);
+  if (!userId) {
     return res.status(401).json({
       error: 'Unauthorized: Authentication required. Please sign in.'
     });
+  }
+
+  // Normalize req.auth so downstream code can always use req.auth.userId
+  if (!req.auth || !req.auth.userId) {
+    req.auth = req.auth || {};
+    req.auth.userId = userId;
   }
 
   next();
@@ -160,11 +176,19 @@ const checkRole = (allowedRoles) => {
       process.env.NODE_ENV === 'test' &&
       process.env.TEST_AUTH_BYPASS === 'true';
 
+    const userId = getAuthenticatedUserId(req);
+
     // Reject unauthenticated requests (unless test bypass)
-    if (!req.auth?.userId && !isTestBypassEnabled) {
+    if (!userId && !isTestBypassEnabled) {
       return res.status(401).json({
         error: 'Unauthorized: Authentication required.'
       });
+    }
+
+    // Normalize req.auth
+    if (userId && (!req.auth || !req.auth.userId)) {
+      req.auth = req.auth || {};
+      req.auth.userId = userId;
     }
 
     const userRole = await resolveUserRole(req);
@@ -193,10 +217,18 @@ const requireWorkerScope = async (req, res, next) => {
     process.env.NODE_ENV === 'test' &&
     process.env.TEST_AUTH_BYPASS === 'true';
 
-  if (!req.auth?.userId && !isTestBypassEnabled) {
+  const userId = getAuthenticatedUserId(req);
+
+  if (!userId && !isTestBypassEnabled) {
     return res.status(401).json({
       error: 'Unauthorized: Authentication required.'
     });
+  }
+
+  // Normalize req.auth
+  if (userId && (!req.auth || !req.auth.userId)) {
+    req.auth = req.auth || {};
+    req.auth.userId = userId;
   }
 
   // In test mode, skip worker scope validation if test role header is present
@@ -239,8 +271,16 @@ const requireSupervisorScope = async (req, res, next) => {
     process.env.NODE_ENV === 'test' &&
     process.env.TEST_AUTH_BYPASS === 'true';
 
-  if (!req.auth?.userId && !isTestBypassEnabled) {
+  const userId = getAuthenticatedUserId(req);
+
+  if (!userId && !isTestBypassEnabled) {
     return res.status(401).json({ error: 'Unauthorized: Authentication required.' });
+  }
+
+  // Normalize req.auth
+  if (userId && (!req.auth || !req.auth.userId)) {
+    req.auth = req.auth || {};
+    req.auth.userId = userId;
   }
 
   const userRole = await resolveUserRole(req);

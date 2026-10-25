@@ -121,6 +121,11 @@ export default function CitizenDashboard() {
       setEventHistory(events);
     } catch (err) {
       console.error('Failed to load ticket:', err);
+      // Clean up stale ticket from localStorage if ticket no longer exists
+      if (err.response?.status === 404 || err.response?.status === 401 || err.message === 'Ticket not found') {
+        localStorage.removeItem(STORAGE_KEY);
+        setActiveTicket(null);
+      }
       setFeedback({ type: 'error', text: err.response?.data?.error || err.message || 'Ticket not found' });
     } finally {
       setIsRefreshing(false);
@@ -145,8 +150,9 @@ export default function CitizenDashboard() {
       if (saved) {
         try {
           const parsed = JSON.parse(saved);
-          if (parsed.trackingToken || parsed._id) {
-            await loadTicket(parsed.trackingToken || parsed._id);
+          const tokenOrId = parsed.trackingToken || parsed.ticketNumber || parsed._id;
+          if (tokenOrId) {
+            await loadTicket(tokenOrId);
             setActiveTab('ticket');
           }
         } catch {

@@ -213,7 +213,7 @@ const TicketTracker = ({ onBack }) => {
         }
       }
 
-      const res = await apiClient.get('/worker/services');
+      const res = await apiClient.get('/services');
       if (isMounted && res.data && res.data.length > 0) {
         setService(res.data[0]);
       }

@@ -32,7 +32,7 @@ const Worker = require('../models/Worker');
 const Organization = require('../models/Organization');
 const Department = require('../models/Department');
 const Counter = require('../models/Counter');
-const { requireAuth, checkRole, resolveUserRole, invalidateUserCache } = require('../middleware/authMiddleware');
+const { requireAuth, checkRole, resolveUserRole, invalidateUserCache, getAuthenticatedUserId } = require('../middleware/authMiddleware');
 
 const isValidObjectId = (id) => mongoose.Types.ObjectId.isValid(id);
 
@@ -63,7 +63,7 @@ async function getClerkUserInfo(clerkUserId) {
 // HELPER: Check if the current user is the master admin
 // ═══════════════════════════════════════════════════════════════════
 async function isMasterAdmin(req) {
-  const userId = req.auth?.userId;
+  const userId = getAuthenticatedUserId(req);
   if (!userId) return false;
 
   // Check via Clerk metadata first

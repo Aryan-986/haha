@@ -1,5 +1,22 @@
 const mongoose = require('mongoose');
 
+const roomSubSchema = new mongoose.Schema({
+  roomNumber: {
+    type: String,
+    required: true,
+    trim: true
+  },
+  name: {
+    type: String,
+    trim: true,
+    default: ''
+  },
+  isActive: {
+    type: Boolean,
+    default: true
+  }
+}, { timestamps: true });
+
 const departmentSchema = new mongoose.Schema({
   orgId: {
     type: mongoose.Schema.Types.ObjectId,
@@ -23,6 +40,10 @@ const departmentSchema = new mongoose.Schema({
     trim: true,
     default: '',
     index: true
+  },
+  rooms: {
+    type: [roomSubSchema],
+    default: []
   },
   avgServiceTimeMins: {
     type: Number,

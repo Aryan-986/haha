@@ -23,7 +23,8 @@ const {
   requireAuth,
   checkRole,
   requireWorkerScope,
-  resolveStaffWorker
+  resolveStaffWorker,
+  resolveUserRole
 } = require('../middleware/authMiddleware');
 
 const isValidObjectId = (id) => mongoose.Types.ObjectId.isValid(id);
@@ -53,7 +54,11 @@ router.get('/me', requireAuth, async (req, res) => {
 
     const profile = await workerService.getWorkerProfile(effectiveUserId);
     if (!profile?.worker) {
-      return res.status(404).json({ success: false, error: 'Worker profile not found for this account.' });
+      return res.json({
+        success: true,
+        worker: null,
+        message: 'No worker profile linked to this account.'
+      });
     }
 
     return res.json({ success: true, ...profile });
@@ -76,12 +81,13 @@ router.get('/workers', requireAuth, async (req, res) => {
     let callerRole = req.headers['x-test-role']?.toLowerCase();
 
     if (!isTestBypass) {
+      const userRole = await resolveUserRole(req);
       const worker = await resolveStaffWorker(req);
-      callerRole = worker?.role?.toLowerCase();
+      callerRole = userRole === 'master_admin' ? 'master_admin' : (worker?.role?.toLowerCase() || userRole);
 
       // Non-admin workers can only list workers in their own org
       if (!['master_admin', 'supervisor', 'org_admin'].includes(callerRole)) {
-        if (orgId && worker?.organizationId?._id?.toString() !== orgId) {
+        if (worker && orgId && worker.organizationId?._id?.toString() !== orgId) {
           return res.status(403).json({ success: false, error: 'Forbidden: Cannot list workers for other organizations.' });
         }
       }
@@ -559,9 +565,9 @@ router.post('/tokens/no-show', requireAuth, async (req, res) => {
 });
 
 /**
- * GET /api/v1/worker/services (Legacy fallback — authenticated)
+ * GET /api/v1/worker/services (Legacy fallback — public)
  */
-router.get('/services', requireAuth, async (req, res) => {
+router.get('/services', async (req, res) => {
   try {
     const services = await Service.find();
     res.json(services);
