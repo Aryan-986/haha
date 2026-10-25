@@ -444,9 +444,16 @@ router.post('/:id/approve', requireAuth, checkRole(['master_admin']), async (req
       if (!isValidObjectId(counterId)) {
         return res.status(400).json({ success: false, error: 'Invalid counterId format.' });
       }
-      counter = await Counter.findOne({ _id: counterId, organizationId: orgId });
+      const counterQuery = { _id: counterId, organizationId: orgId };
+      if (dept) {
+        counterQuery.departmentId = dept._id;
+      }
+      counter = await Counter.findOne(counterQuery);
       if (!counter) {
-        return res.status(400).json({ success: false, error: 'Counter not found in specified organization.' });
+        return res.status(400).json({
+          success: false,
+          error: 'Counter not found or does not belong to the specified department and organization.'
+        });
       }
     }
 
@@ -473,6 +480,14 @@ router.post('/:id/approve', requireAuth, checkRole(['master_admin']), async (req
       role: assignedRole,
       status: 'AVAILABLE'
     });
+
+    // Associate and activate counter if assigned
+    if (counter) {
+      counter.assignedWorkerId = worker._id;
+      counter.isActive = true;
+      if (counter.status === 'OFFLINE') counter.status = 'AVAILABLE';
+      await counter.save();
+    }
 
     // Update Clerk metadata to reflect the assigned role
     if (process.env.CLERK_SECRET_KEY) {

@@ -200,6 +200,19 @@ async function callNextTicket({ organizationId, departmentId, counterId, workerI
     pendingFilter.targetRoomId = roomId;
   }
 
+  // If calling at a specific counter, only claim tickets targeted to this counter or general tickets
+  if (counter && counter._id) {
+    pendingFilter.$and = [
+      {
+        $or: [
+          { targetCounterId: null },
+          { targetCounterId: { $exists: false } },
+          { targetCounterId: counter._id }
+        ]
+      }
+    ];
+  }
+
   // Atomic claim using findOneAndUpdate with sort (Priority then FIFO)
   const claimedTicket = await Ticket.findOneAndUpdate(
     pendingFilter,
@@ -209,7 +222,8 @@ async function callNextTicket({ organizationId, departmentId, counterId, workerI
         calledAt: new Date(),
         currentCounterId: counter?._id || null,
         currentWorkerId: workerId && isValidObjectId(workerId) ? workerId : null,
-        counterNumber: counter?.counterNumber || 1
+        counterNumber: counter?.counterNumber || 1,
+        roomNumber: counter?.roomNumber || dept.roomNumber || ''
       },
       $push: {
         history: {
@@ -467,6 +481,11 @@ async function transferTicket({ ticketId, targetDepartmentId, targetCounterId, w
     });
     if (!targetCounter) {
       const err = new Error('Target counter does not exist in destination department or organization');
+      err.status = 400;
+      throw err;
+    }
+    if (targetCounter.isActive === false) {
+      const err = new Error('Target counter is currently inactive or deactivated');
       err.status = 400;
       throw err;
     }

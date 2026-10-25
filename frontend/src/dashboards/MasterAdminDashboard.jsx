@@ -21,7 +21,9 @@ import {
   AlertTriangle,
   FolderTree,
   Edit,
-  Users
+  Users,
+  LayoutGrid,
+  DoorOpen
 } from 'lucide-react';
 import {
   getOrganizations,
@@ -32,6 +34,7 @@ import {
   deleteOrganization
 } from '../services/organizationService';
 import StaffManagement from '../components/StaffManagement';
+import DepartmentLocationManager from '../components/DepartmentLocationManager';
 
 export default function MasterAdminDashboard() {
   const [organizations, setOrganizations] = useState([]);
@@ -47,6 +50,17 @@ export default function MasterAdminDashboard() {
   const [editingOrg, setEditingOrg] = useState(null);
   const [isDeptModalOpen, setIsDeptModalOpen] = useState(false);
   const [targetOrgForDept, setTargetOrgForDept] = useState(null);
+
+  // Department Location (Rooms & Counters) Modal
+  const [isLocationManagerOpen, setIsLocationManagerOpen] = useState(false);
+  const [selectedDeptForLocations, setSelectedDeptForLocations] = useState(null);
+  const [selectedOrgForLocations, setSelectedOrgForLocations] = useState(null);
+
+  const handleOpenLocationManager = (dept, org) => {
+    setSelectedDeptForLocations(dept);
+    setSelectedOrgForLocations(org);
+    setIsLocationManagerOpen(true);
+  };
 
   // Form states
   const [orgForm, setOrgForm] = useState({
@@ -586,7 +600,7 @@ export default function MasterAdminDashboard() {
                         {depts.map((d) => (
                           <div
                             key={d._id}
-                            className="p-3 bg-white border border-neutral-200 rounded-lg flex items-center justify-between text-xs"
+                            className="p-3.5 bg-white border border-neutral-200 rounded-lg flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-xs shadow-2xs hover:border-neutral-300 transition"
                           >
                             <div>
                               <div className="font-bold text-neutral-900 flex items-center gap-1.5">
@@ -598,10 +612,27 @@ export default function MasterAdminDashboard() {
                                   </span>
                                 )}
                               </div>
-                              <div className="text-neutral-500 text-[11px] mt-0.5">
-                                {d.roomNumber ? `Room ${d.roomNumber} · ` : ''}Avg {d.avgServiceTimeMins || 5} min
+                              <div className="text-neutral-500 text-[11px] mt-0.5 flex items-center gap-1.5">
+                                {d.roomNumber ? (
+                                  <span className="flex items-center gap-1 text-neutral-600 font-medium">
+                                    <DoorOpen className="w-3 h-3 text-neutral-400" />
+                                    <span>Room {d.roomNumber}</span>
+                                    <span>·</span>
+                                  </span>
+                                ) : null}
+                                <span>Avg {d.avgServiceTimeMins || 5} min wait</span>
                               </div>
                             </div>
+
+                            <button
+                              type="button"
+                              onClick={() => handleOpenLocationManager(d, org)}
+                              className="inline-flex items-center justify-center gap-1 px-2.5 py-1.5 bg-neutral-100 hover:bg-emerald-50 text-neutral-700 hover:text-emerald-800 border border-neutral-200 hover:border-emerald-300 rounded-lg transition text-[11px] font-semibold cursor-pointer shrink-0"
+                              title="Manage physical rooms and counters"
+                            >
+                              <LayoutGrid className="w-3.5 h-3.5 text-emerald-700" />
+                              <span>Manage Rooms & Counters</span>
+                            </button>
                           </div>
                         ))}
                       </div>
@@ -867,6 +898,19 @@ export default function MasterAdminDashboard() {
           </div>
         </div>
       )}
+
+      {/* ── Modal: Manage Department Rooms & Counters ── */}
+      <DepartmentLocationManager
+        department={selectedDeptForLocations}
+        organization={selectedOrgForLocations}
+        isOpen={isLocationManagerOpen}
+        onClose={() => {
+          setIsLocationManagerOpen(false);
+          setSelectedDeptForLocations(null);
+          setSelectedOrgForLocations(null);
+        }}
+        onDepartmentUpdated={fetchInitialData}
+      />
 
     </div>
   );

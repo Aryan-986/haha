@@ -18,7 +18,7 @@ const Department = require('../models/Department');
 /**
  * Create a new counter in a department
  */
-async function createCounter({ organizationId, departmentId, counterNumber, name, roomNumber }) {
+async function createCounter({ organizationId, departmentId, counterNumber, name, roomNumber, status, isActive }) {
   if (!isValidObjectId(organizationId)) throw new Error('Valid organizationId is required');
   if (!isValidObjectId(departmentId)) throw new Error('Valid departmentId is required');
   if (!counterNumber) throw new Error('counterNumber is required');
@@ -44,7 +44,9 @@ async function createCounter({ organizationId, departmentId, counterNumber, name
     throw err;
   }
 
-  const resolvedRoom = roomNumber ? String(roomNumber).trim() : (dept.roomNumber || '');
+  const resolvedRoom = roomNumber !== undefined && roomNumber !== null && String(roomNumber).trim() !== ''
+    ? String(roomNumber).trim()
+    : (dept.roomNumber || '');
 
   const counter = await Counter.create({
     organizationId,
@@ -52,8 +54,8 @@ async function createCounter({ organizationId, departmentId, counterNumber, name
     counterNumber: Number(counterNumber),
     name: name || `Counter ${counterNumber}`,
     roomNumber: resolvedRoom,
-    status: 'OFFLINE',
-    isActive: false
+    status: status || 'OFFLINE',
+    isActive: isActive !== undefined ? isActive : (status === 'AVAILABLE')
   });
 
   emitQueueEvent('counter.updated', {
