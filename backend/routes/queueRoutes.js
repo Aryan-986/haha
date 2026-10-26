@@ -111,11 +111,11 @@ const callNextHandler = async (req, res) => {
   }
 };
 
-// Register Call Next Endpoints across all route aliases
-router.post('/call-next', callNextHandler);
-router.post('/v1/queue/call-next', callNextHandler);
-router.post('/v1/tokens/call-next', callNextHandler);
-router.post('/services/:id/call-next', callNextHandler);
+// Register Call Next Endpoints across all route aliases (Staff only)
+router.post('/call-next', requireAuth, checkRole(['master_admin', 'supervisor', 'org_admin', 'worker']), callNextHandler);
+router.post('/v1/queue/call-next', requireAuth, checkRole(['master_admin', 'supervisor', 'org_admin', 'worker']), callNextHandler);
+router.post('/v1/tokens/call-next', requireAuth, checkRole(['master_admin', 'supervisor', 'org_admin', 'worker']), callNextHandler);
+router.post('/services/:id/call-next', requireAuth, checkRole(['master_admin', 'supervisor', 'org_admin', 'worker']), callNextHandler);
 
 // =======================================================================
 // GET /api/services - Fetch all services

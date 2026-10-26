@@ -444,7 +444,7 @@ async function transferTicket({ ticketId, targetDepartmentId, targetCounterId, w
   if (workerId && isValidObjectId(workerId)) {
     const worker = await Worker.findById(workerId);
     if (!worker || worker.organizationId.toString() !== ticket.organizationId.toString()) {
-      const err = new Error('Unauthorized: Worker cannot transfer ticket belonging to another organization');
+      const err = new Error('Tenant Boundary Error: Worker cannot transfer ticket belonging to another organization');
       err.status = 403;
       throw err;
     }
@@ -500,6 +500,9 @@ async function transferTicket({ ticketId, targetDepartmentId, targetCounterId, w
   ticket.targetRoomId = targetCounter?.roomNumber ? targetCounter._id : (targetDept.roomNumber ? targetDept._id : null);
   ticket.roomNumber = targetCounter?.roomNumber || targetDept.roomNumber || '';
   ticket.targetCounterId = targetCounter ? targetCounter._id : null;
+  if (targetCounter && targetCounter.counterNumber) {
+    ticket.counterNumber = targetCounter.counterNumber;
+  }
   ticket.currentCounterId = null;
   ticket.currentWorkerId = null;
 

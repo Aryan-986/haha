@@ -86,11 +86,16 @@ export async function getTicketETA(ticketId) {
 /**
  * Snooze / delay ticket by specified minutes (citizen delay request)
  */
-export async function snoozeCitizenTicket(ticketId, minutes = 5) {
-  const response = await apiClient.post(`/api/v1/tickets/${ticketId}/snooze`, {
+export async function snoozeCitizenTicket(ticketId, minutes = 5, trackingToken = null) {
+  const payload = {
     minutes,
     source: 'CITIZEN'
-  });
+  };
+  if (trackingToken) payload.trackingToken = trackingToken;
+  const headers = {};
+  if (trackingToken) headers['x-tracking-token'] = trackingToken;
+
+  const response = await apiClient.post(`/api/v1/tickets/${ticketId}/snooze`, payload, { headers });
   return response.data;
 }
 

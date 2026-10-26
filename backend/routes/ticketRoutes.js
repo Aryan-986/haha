@@ -170,9 +170,56 @@ router.get('/:id', async (req, res) => {
     const positionData = await citizenService.getTicketPosition(ticket._id);
     const etaData = await citizenService.getTicketETA(ticket._id);
 
+    // Check if caller is authenticated staff
+    let isStaff = false;
+    if (req.auth?.userId) {
+      const { resolveUserRole } = require('../middleware/authMiddleware');
+      const role = await resolveUserRole(req);
+      if (['master_admin', 'supervisor', 'org_admin', 'worker'].includes((role || '').toLowerCase())) {
+        isStaff = true;
+      }
+    }
+
+    // Public view omits trackingToken, idempotencyKey, and currentWorkerId to prevent credential harvesting
+    const returnedTicket = isStaff ? ticket : {
+      _id: ticket._id,
+      ticketNumber: ticket.ticketNumber,
+      status: ticket.status,
+      priority: ticket.priority,
+      source: ticket.source,
+      roomNumber: ticket.roomNumber,
+      counterNumber: ticket.counterNumber,
+      createdAt: ticket.createdAt,
+      calledAt: ticket.calledAt,
+      serviceStartedAt: ticket.serviceStartedAt,
+      completedAt: ticket.completedAt,
+      organization: ticket.organizationId ? {
+        _id: ticket.organizationId._id,
+        name: ticket.organizationId.name,
+        type: ticket.organizationId.type
+      } : null,
+      department: ticket.currentDepartmentId ? {
+        _id: ticket.currentDepartmentId._id,
+        name: ticket.currentDepartmentId.name,
+        prefix: ticket.currentDepartmentId.prefix,
+        roomNumber: ticket.currentDepartmentId.roomNumber
+      } : null,
+      counter: ticket.currentCounterId ? {
+        _id: ticket.currentCounterId._id,
+        counterNumber: ticket.currentCounterId.counterNumber,
+        name: ticket.currentCounterId.name
+      } : null,
+      history: ticket.history ? ticket.history.map(h => ({
+        deptId: h.deptId,
+        timestamp: h.timestamp,
+        counterId: h.counterId,
+        action: h.action
+      })) : []
+    };
+
     res.json({
       success: true,
-      ticket,
+      ticket: returnedTicket,
       peopleAhead: positionData.peopleAhead,
       position: positionData.position,
       estimatedWaitMin: etaData.estimatedWaitMin,
@@ -348,25 +395,50 @@ router.post('/:id/transfer', requireAuth, async (req, res) => {
 });
 
 /**
- * POST /api/v1/tickets/:id/snooze - Snooze ticket (staff only)
+ * POST /api/v1/tickets/:id/snooze - Snooze ticket
+ * Authorized for staff (via Clerk session) OR citizen (via valid trackingToken)
  */
-router.post('/:id/snooze', requireAuth, async (req, res) => {
+router.post('/:id/snooze', async (req, res) => {
   try {
     const { id } = req.params;
-    const { minutes } = req.body;
+    const { minutes, source, trackingToken } = req.body;
+    const tokenHeader = req.headers['x-tracking-token'];
+    const suppliedToken = trackingToken || tokenHeader;
+
+    if (!isValidObjectId(id)) {
+      return res.status(400).json({ success: false, error: 'Valid ticket ID is required' });
+    }
+
+    const ticketRecord = await Ticket.findById(id);
+    if (!ticketRecord) {
+      return res.status(404).json({ success: false, error: 'Ticket not found' });
+    }
+
     const isTestBypass = process.env.NODE_ENV === 'test' && process.env.TEST_AUTH_BYPASS === 'true';
     let workerId = req.body.workerId;
+    let effectiveSource = source || 'WORKER';
 
-    if (!isTestBypass) {
-      const worker = await resolveStaffWorker(req);
-      if (!worker) return res.status(403).json({ success: false, error: 'No worker profile found.' });
-      workerId = worker._id.toString();
+    if (effectiveSource === 'CITIZEN') {
+      if (!isTestBypass) {
+        if (!suppliedToken || suppliedToken !== ticketRecord.trackingToken) {
+          return res.status(403).json({ success: false, error: 'Valid tracking token is required to delay this ticket' });
+        }
+      }
+      workerId = null;
+    } else {
+      // Staff authorization requires Clerk session
+      if (!isTestBypass) {
+        const worker = await resolveStaffWorker(req);
+        if (!worker) return res.status(401).json({ success: false, error: 'Staff authentication required' });
+        workerId = worker._id.toString();
+      }
     }
 
     const ticket = await queueService.snoozeTicket({
       ticketId: id,
       minutes: Number(minutes) || 5,
-      workerId
+      workerId,
+      source: effectiveSource
     });
     res.json({ success: true, message: `Ticket snoozed by ${minutes || 5} minutes`, ticket });
   } catch (err) {

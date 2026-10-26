@@ -201,8 +201,8 @@ export default function CitizenDashboard() {
     if (!activeTicket || delayLoading) return;
     try {
       setDelayLoading(true);
-      await snoozeCitizenTicket(activeTicket._id, minutes);
-      await loadTicket(activeTicket._id);
+      await snoozeCitizenTicket(activeTicket._id, minutes, activeTicket.trackingToken);
+      await loadTicket(activeTicket.trackingToken || activeTicket._id);
       setFeedback({
         type: 'success',
         text: `Delay requested. Your turn has been delayed by ${minutes} minutes.`
@@ -247,7 +247,7 @@ export default function CitizenDashboard() {
       const pNum = payload.ticketNumber || payload.ticket?.ticketNumber;
 
       if (pId === current._id?.toString() || pNum === current.ticketNumber) {
-        loadTicket(current._id);
+        loadTicket(current.trackingToken || current._id);
       }
     };
 
@@ -260,7 +260,7 @@ export default function CitizenDashboard() {
     socket.on('ticket.skipped', handleUpdate);
     socket.on('queue.updated', () => {
       if (ticketRef.current) {
-        loadTicket(ticketRef.current._id);
+        loadTicket(ticketRef.current.trackingToken || ticketRef.current._id);
       }
     });
 
@@ -313,7 +313,7 @@ export default function CitizenDashboard() {
         throw new Error(res.error || 'Failed to issue ticket');
       }
 
-      await loadTicket(res.ticket._id);
+      await loadTicket(res.ticket.trackingToken || res.ticket._id);
       setActiveTab('ticket');
       setFeedback({
         type: 'success',

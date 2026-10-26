@@ -100,7 +100,9 @@ async function runRegressionTests() {
       departmentId: deptA._id,
       counterNumber: 1,
       name: 'Counter 1',
-      roomNumber: 'Room 101-A'
+      roomNumber: 'Room 101-A',
+      status: 'AVAILABLE',
+      isActive: true
     });
     assert(counter1.roomNumber === 'Room 101-A', 'Counter 1 created with roomNumber: Room 101-A');
 
@@ -110,7 +112,9 @@ async function runRegressionTests() {
       departmentId: deptA._id,
       counterNumber: 2,
       name: 'Counter 2',
-      roomNumber: 'Room 101-B'
+      roomNumber: 'Room 101-B',
+      status: 'AVAILABLE',
+      isActive: true
     });
     assert(counter2.roomNumber === 'Room 101-B', 'Counter 2 created with roomNumber: Room 101-B in same department');
 
@@ -120,7 +124,9 @@ async function runRegressionTests() {
       departmentId: deptB._id,
       counterNumber: 1,
       name: 'Verification Desk 1',
-      roomNumber: 'Room 102'
+      roomNumber: 'Room 102',
+      status: 'AVAILABLE',
+      isActive: true
     });
     assert(counter3.roomNumber === 'Room 102', 'Counter 3 created in destination department with roomNumber');
 
