@@ -59,51 +59,9 @@ const callNextHandler = async (req, res) => {
       });
     }
 
-    // 2. Legacy Service model fallback if serviceId is provided
-    const targetServiceId = req.params.id || serviceId;
-    if (targetServiceId && isValidObjectId(targetServiceId)) {
-      const service = await Service.findById(targetServiceId);
-      if (service) {
-        service.currentlyServingNumber = (service.currentlyServingNumber || 100) + 1;
-        if (service.currentQueueCount > 0) {
-          service.currentQueueCount -= 1;
-        }
-        await service.save();
-
-        const ticketNum = `A-${service.currentlyServingNumber}`;
-        const legacyPayload = {
-          ticketNumber: ticketNum,
-          ticket: {
-            ticketNumber: ticketNum,
-            status: 'SERVING',
-            counterNumber: counterNumber || 1,
-            calledAt: new Date()
-          },
-          event: 'CALL_NEXT_LEGACY'
-        };
-        emitQueueEvent('TOKEN_CALLED', legacyPayload);
-        emitQueueEvent('TOKEN_UPDATED', legacyPayload);
-
-        return res.status(200).json({
-          success: true,
-          message: 'Next ticket called successfully',
-          ticketNumber: ticketNum,
-          currentlyServingNumber: service.currentlyServingNumber,
-          currentQueueCount: service.currentQueueCount,
-          activeCounters: service.activeCounters,
-          ticket: {
-            ticketNumber: ticketNum,
-            status: 'SERVING',
-            counterNumber: counterNumber || 1,
-            calledAt: new Date()
-          }
-        });
-      }
-    }
-
     return res.status(400).json({
       success: false,
-      error: 'departmentId or serviceId is required to call next ticket'
+      error: 'Valid departmentId is required to call next ticket'
     });
   } catch (err) {
     console.error('ERROR in callNextHandler:', err);
@@ -302,24 +260,58 @@ router.post('/admin/sim-update', requireAuth, checkRole(['master_admin']), async
 // FIXED: Now uses queueService.issueTicket (atomic, idempotent, correct)
 // The previous inline handler used non-atomic Ticket.countDocuments which
 // could produce duplicate ticket numbers under concurrent load.
-// =======================================================================
+const tokenIssuanceLimit = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: process.env.TICKET_RATE_LIMIT ? parseInt(process.env.TICKET_RATE_LIMIT) : 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    error: 'Too many token requests from this IP. Please wait before requesting another token.'
+  },
+  skip: (req) => {
+    return process.env.NODE_ENV === 'test' && process.env.TEST_AUTH_BYPASS === 'true';
+  }
+});
+
 const issueTokenHandler = async (req, res) => {
   try {
-    const { orgId, deptId, departmentId, organizationId, roomNumber, idempotencyKey, priority, source } = req.body;
+    const {
+      orgId,
+      deptId,
+      departmentId,
+      organizationId,
+      serviceWorkflowId,
+      workflowId,
+      serviceId,
+      roomNumber,
+      idempotencyKey,
+      priority,
+      source
+    } = req.body;
     const targetOrgId = orgId || organizationId;
     const targetDeptId = deptId || departmentId;
+    const targetWorkflowId = serviceWorkflowId || workflowId;
     const key = req.headers['idempotency-key'] || idempotencyKey;
 
     if (!targetOrgId || !mongoose.Types.ObjectId.isValid(targetOrgId)) {
-      return res.status(400).json({ error: 'Valid orgId or organizationId is required' });
+      return res.status(400).json({ success: false, error: 'Valid orgId or organizationId is required' });
     }
-    if (!targetDeptId || !mongoose.Types.ObjectId.isValid(targetDeptId)) {
-      return res.status(400).json({ error: 'Valid deptId or departmentId is required' });
+    if (!targetDeptId && !targetWorkflowId) {
+      return res.status(400).json({ success: false, error: 'Valid deptId, departmentId, or serviceWorkflowId is required' });
+    }
+    if (targetDeptId && !mongoose.Types.ObjectId.isValid(targetDeptId)) {
+      return res.status(400).json({ success: false, error: 'Valid deptId or departmentId is required' });
+    }
+    if (targetWorkflowId && !mongoose.Types.ObjectId.isValid(targetWorkflowId)) {
+      return res.status(400).json({ success: false, error: 'Valid serviceWorkflowId is required' });
     }
 
     const result = await queueService.issueTicket({
       organizationId: targetOrgId,
       departmentId: targetDeptId,
+      serviceWorkflowId: targetWorkflowId,
+      serviceId,
       priority: priority || 'NORMAL',
       source: source || 'WEB',
       roomNumber,
@@ -338,12 +330,12 @@ const issueTokenHandler = async (req, res) => {
     });
   } catch (err) {
     console.error('ERROR in /tokens/issue:', err);
-    res.status(err.status || 500).json({ error: err.message || 'Failed to issue token' });
+    res.status(err.status || 500).json({ success: false, error: err.message || 'Failed to issue token' });
   }
 };
 
-router.post('/v1/tokens/issue', issueTokenHandler);
-router.post('/tokens/issue', issueTokenHandler);
+router.post('/v1/tokens/issue', tokenIssuanceLimit, issueTokenHandler);
+router.post('/tokens/issue', tokenIssuanceLimit, issueTokenHandler);
 
 // =======================================================================
 // GET /api/v1/tokens/track/:ticketId & GET /api/tokens/track/:ticketId
@@ -557,41 +549,9 @@ const dispenseTokenHandler = async (req, res) => {
       });
     }
 
-    // Fallback for legacy standalone Service if no org/dept exists
-    const { serviceId } = req.body;
-    let targetServiceId = serviceId;
-
-    if (!targetServiceId) {
-      const defaultService = await Service.findOne();
-      if (!defaultService) {
-        return res.status(404).json({ error: 'No service or department available for dispensing' });
-      }
-      targetServiceId = defaultService._id;
-    }
-
-    const updatedService = await Service.findByIdAndUpdate(
-      targetServiceId,
-      { $inc: { currentQueueCount: 1 } },
-      { new: true, runValidators: false }
-    );
-
-    if (!updatedService) {
-      return res.status(404).json({ error: 'Service not found' });
-    }
-
-    const ticketNum = `A-${100 + updatedService.currentQueueCount}`;
-    emitQueueEvent('TOKEN_UPDATED', {
-      ticketNumber: ticketNum,
-      ticket: { ticketNumber: ticketNum },
-      event: 'DISPENSE_LEGACY'
-    });
-
-    return res.json({
-      success: true,
-      source: source || 'KIOSK',
-      ticketNumber: ticketNum,
-      ticket: { ticketNumber: ticketNum },
-      currentQueueCount: updatedService.currentQueueCount
+    return res.status(400).json({
+      success: false,
+      error: 'Valid organization and department are required for dispensing'
     });
   } catch (err) {
     console.error('ERROR in /tokens/dispense:', err);

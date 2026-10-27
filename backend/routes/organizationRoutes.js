@@ -6,6 +6,7 @@ const Department = require('../models/Department');
 const Counter = require('../models/Counter');
 const Worker = require('../models/Worker');
 const Ticket = require('../models/Ticket');
+const ServiceWorkflow = require('../models/ServiceWorkflow');
 const { requireAuth, checkRole } = require('../middleware/authMiddleware');
 const { archiveOrganization, updateOrganization } = require('../services/organizationService');
 
@@ -197,6 +198,107 @@ router.get('/:orgId/departments', async (req, res) => {
     console.error('ERROR in GET /api/v1/orgs/:orgId/departments:', err);
     res.status(500).json({ error: 'Failed to fetch departments', details: err.message });
   }
-});
+// POST /api/v1/orgs/:orgId/service-workflows - Create a Service Workflow
+const createWorkflowHandler = async (req, res) => {
+  try {
+    const { orgId } = req.params;
+    const { name, description, entryDepartmentId, stages, isActive } = req.body;
+
+    if (!isValidObjectId(orgId)) {
+      return res.status(400).json({ success: false, error: 'Invalid Organization ID format' });
+    }
+
+    const org = await Organization.findOne({ _id: orgId, isDeleted: { $ne: true } });
+    if (!org || org.status === 'INACTIVE') {
+      return res.status(404).json({ success: false, error: 'Organization not found or inactive' });
+    }
+
+    if (!name || !name.trim()) {
+      return res.status(400).json({ success: false, error: 'Workflow name is required' });
+    }
+
+    if (!entryDepartmentId || !isValidObjectId(entryDepartmentId)) {
+      return res.status(400).json({ success: false, error: 'Valid entryDepartmentId is required' });
+    }
+
+    const entryDept = await Department.findOne({ _id: entryDepartmentId, orgId });
+    if (!entryDept) {
+      return res.status(400).json({ success: false, error: 'entryDepartmentId does not belong to specified organization' });
+    }
+
+    // Validate stages if provided
+    const formattedStages = [];
+    if (Array.isArray(stages)) {
+      for (let i = 0; i < stages.length; i++) {
+        const stage = stages[i];
+        if (!stage.departmentId || !isValidObjectId(stage.departmentId)) {
+          return res.status(400).json({ success: false, error: `Invalid departmentId at stage index ${i}` });
+        }
+        const stageDept = await Department.findOne({ _id: stage.departmentId, orgId });
+        if (!stageDept) {
+          return res.status(400).json({ success: false, error: `Stage department at index ${i} does not belong to organization` });
+        }
+        formattedStages.push({
+          departmentId: stage.departmentId,
+          name: stage.name || stageDept.name,
+          order: typeof stage.order === 'number' ? stage.order : i,
+          isOptional: Boolean(stage.isOptional),
+          allowedNextDepartments: Array.isArray(stage.allowedNextDepartments)
+            ? stage.allowedNextDepartments.filter(isValidObjectId)
+            : []
+        });
+      }
+    }
+
+    const workflow = await ServiceWorkflow.create({
+      organizationId: orgId,
+      name: name.trim(),
+      description: description ? description.trim() : '',
+      entryDepartmentId,
+      stages: formattedStages,
+      isActive: isActive !== undefined ? Boolean(isActive) : true
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'Service workflow created successfully',
+      workflow
+    });
+  } catch (err) {
+    console.error('ERROR in POST /service-workflows:', err);
+    res.status(500).json({ success: false, error: 'Failed to create service workflow', details: err.message });
+  }
+};
+
+router.post('/:orgId/service-workflows', requireAuth, checkRole(['master_admin', 'supervisor', 'org_admin']), createWorkflowHandler);
+router.post('/:orgId/workflows', requireAuth, checkRole(['master_admin', 'supervisor', 'org_admin']), createWorkflowHandler);
+
+// GET /api/v1/orgs/:orgId/service-workflows - List Service Workflows for an organization (public)
+const listWorkflowsHandler = async (req, res) => {
+  try {
+    const { orgId } = req.params;
+    if (!isValidObjectId(orgId)) {
+      return res.status(400).json({ success: false, error: 'Invalid Organization ID format' });
+    }
+
+    const workflows = await ServiceWorkflow.find({
+      organizationId: orgId,
+      isActive: true
+    })
+      .populate('entryDepartmentId', 'name prefix roomNumber avgServiceTimeMins')
+      .populate('stages.departmentId', 'name prefix roomNumber avgServiceTimeMins')
+      .populate('stages.allowedNextDepartments', 'name prefix roomNumber')
+      .sort({ createdAt: 1 });
+
+    res.json(workflows);
+  } catch (err) {
+    console.error('ERROR in GET /service-workflows:', err);
+    res.status(500).json({ success: false, error: 'Failed to fetch service workflows', details: err.message });
+  }
+};
+
+router.get('/:orgId/service-workflows', listWorkflowsHandler);
+router.get('/:orgId/workflows', listWorkflowsHandler);
 
 module.exports = router;
+
