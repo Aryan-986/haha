@@ -42,6 +42,7 @@ const ticketSchema = new mongoose.Schema({
   idempotencyKey: {
     type: String,
     sparse: true,
+    unique: true,
     index: true
   },
   source: {
@@ -54,6 +55,16 @@ const ticketSchema = new mongoose.Schema({
     ref: 'Organization',
     required: true,
     index: true
+  },
+  serviceWorkflowId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'ServiceWorkflow',
+    default: null,
+    index: true
+  },
+  currentStageIndex: {
+    type: Number,
+    default: 0
   },
   currentDepartmentId: {
     type: mongoose.Schema.Types.ObjectId,

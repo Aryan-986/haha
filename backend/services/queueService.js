@@ -12,6 +12,7 @@ const Counter = require('../models/Counter');
 const Worker = require('../models/Worker');
 const QueueEvent = require('../models/QueueEvent');
 const TicketSequence = require('../models/TicketSequence');
+const ServiceWorkflow = require('../models/ServiceWorkflow');
 const { assertValidTransition } = require('./ticketStateMachine');
 const { emitQueueEvent } = require('../socket');
 
@@ -37,12 +38,18 @@ async function generateAtomicTicketNumber(organizationId, departmentId, prefix) 
 /**
  * Issue a new Ticket into a Department queue
  */
-async function issueTicket({ organizationId, departmentId, serviceId, priority = 'NORMAL', source = 'KIOSK', roomNumber, idempotencyKey }) {
+async function issueTicket({
+  organizationId,
+  departmentId,
+  serviceId,
+  serviceWorkflowId,
+  priority = 'NORMAL',
+  source = 'KIOSK',
+  roomNumber,
+  idempotencyKey
+}) {
   if (!isValidObjectId(organizationId)) {
     throw new Error('Valid organizationId is required');
-  }
-  if (!isValidObjectId(departmentId)) {
-    throw new Error('Valid departmentId is required');
   }
 
   // Verify Organization is active and not archived/deleted
@@ -69,16 +76,49 @@ async function issueTicket({ organizationId, departmentId, serviceId, priority =
     }
   }
 
-  const dept = await Department.findOne({ _id: departmentId, orgId: organizationId });
+  // Workflow Routing Verification
+  let effectiveDepartmentId = departmentId;
+  let workflow = null;
+
+  if (serviceWorkflowId) {
+    if (!isValidObjectId(serviceWorkflowId)) {
+      const err = new Error('Valid serviceWorkflowId is required');
+      err.status = 400;
+      throw err;
+    }
+    workflow = await ServiceWorkflow.findOne({
+      _id: serviceWorkflowId,
+      organizationId,
+      isActive: true
+    });
+    if (!workflow) {
+      const err = new Error('Service workflow not found or is inactive');
+      err.status = 404;
+      throw err;
+    }
+    // Reject arbitrary department if requested department doesn't match workflow entry
+    if (departmentId && departmentId.toString() !== workflow.entryDepartmentId.toString()) {
+      const err = new Error('Invalid entry department for selected service workflow');
+      err.status = 400;
+      throw err;
+    }
+    effectiveDepartmentId = workflow.entryDepartmentId;
+  }
+
+  if (!effectiveDepartmentId || !isValidObjectId(effectiveDepartmentId)) {
+    throw new Error('Valid departmentId is required');
+  }
+
+  const dept = await Department.findOne({ _id: effectiveDepartmentId, orgId: organizationId });
   if (!dept) {
     throw new Error('Department not found in specified organization');
   }
 
-  const ticketNumber = await generateAtomicTicketNumber(organizationId, departmentId, dept.prefix);
+  const ticketNumber = await generateAtomicTicketNumber(organizationId, effectiveDepartmentId, dept.prefix);
 
   const waitingCount = await Ticket.countDocuments({
     organizationId,
-    currentDepartmentId: departmentId,
+    currentDepartmentId: effectiveDepartmentId,
     status: { $in: ['WAITING', 'TRANSFERRED', 'SNOOZED'] }
   });
 
@@ -89,39 +129,63 @@ async function issueTicket({ organizationId, departmentId, serviceId, priority =
   const normalizedPriority = ['NORMAL', 'URGENT', 'EMERGENCY'].includes(priority) ? priority : 'NORMAL';
   const priorityWeight = normalizedPriority === 'EMERGENCY' ? 3 : normalizedPriority === 'URGENT' ? 2 : 1;
 
-  const ticket = await Ticket.create({
-    ticketNumber,
-    organizationId,
-    currentDepartmentId: departmentId,
-    currentServiceId: serviceId && isValidObjectId(serviceId) ? serviceId : null,
-    targetRoomId: resolvedTargetRoomId,
-    roomNumber: resolvedRoomNumber,
-    priority: normalizedPriority,
-    priorityWeight,
-    source: ['KIOSK', 'WEB', 'MOBILE', 'WALK_IN'].includes(source) ? source : 'WEB',
-    idempotencyKey: idempotencyKey ? idempotencyKey.trim() : undefined,
-    status: 'WAITING',
-    position,
-    history: [{
-      deptId: departmentId,
-      timestamp: new Date(),
-      servedBy: source,
-      action: 'ISSUED'
-    }]
-  });
+  let ticket;
+  try {
+    ticket = await Ticket.create({
+      ticketNumber,
+      organizationId,
+      serviceWorkflowId: workflow?._id || (serviceWorkflowId && isValidObjectId(serviceWorkflowId) ? serviceWorkflowId : null),
+      currentStageIndex: 0,
+      currentDepartmentId: effectiveDepartmentId,
+      currentServiceId: serviceId && isValidObjectId(serviceId) ? serviceId : null,
+      targetRoomId: resolvedTargetRoomId,
+      roomNumber: resolvedRoomNumber,
+      priority: normalizedPriority,
+      priorityWeight,
+      source: ['KIOSK', 'WEB', 'MOBILE', 'WALK_IN'].includes(source) ? source : 'WEB',
+      idempotencyKey: idempotencyKey && typeof idempotencyKey === 'string' && idempotencyKey.trim() ? idempotencyKey.trim() : undefined,
+      status: 'WAITING',
+      position,
+      history: [{
+        deptId: effectiveDepartmentId,
+        timestamp: new Date(),
+        servedBy: source,
+        action: 'ISSUED'
+      }]
+    });
+  } catch (err) {
+    // Handle concurrent duplicate key race condition gracefully
+    if (err.code === 11000 && idempotencyKey) {
+      const existingTicket = await Ticket.findOne({ idempotencyKey: idempotencyKey.trim() })
+        .populate('currentDepartmentId')
+        .populate('organizationId');
+      if (existingTicket) {
+        return {
+          ticket: existingTicket,
+          ticketNumber: existingTicket.ticketNumber,
+          trackingToken: existingTicket.trackingToken,
+          position: existingTicket.position,
+          estimatedWaitMin: 0,
+          department: existingTicket.currentDepartmentId,
+          isIdempotent: true
+        };
+      }
+    }
+    throw err;
+  }
 
   // Record immutable QueueEvent
   await QueueEvent.create({
     organizationId,
     ticketId: ticket._id,
-    departmentId,
+    departmentId: effectiveDepartmentId,
     eventType: 'TICKET_CREATED',
     metadata: { source, priority: normalizedPriority, ticketNumber }
   });
 
   // Calculate live ETA
   const activeCountersCount = await Counter.countDocuments({
-    departmentId,
+    departmentId: effectiveDepartmentId,
     isActive: true,
     status: { $ne: 'OFFLINE' }
   }) || 1;
@@ -133,7 +197,7 @@ async function issueTicket({ organizationId, departmentId, serviceId, priority =
     ticketNumber: ticket.ticketNumber,
     trackingToken: ticket.trackingToken,
     orgId: organizationId.toString(),
-    deptId: departmentId.toString(),
+    deptId: effectiveDepartmentId.toString(),
     departmentName: dept.name,
     roomNumber: resolvedRoomNumber,
     position,
