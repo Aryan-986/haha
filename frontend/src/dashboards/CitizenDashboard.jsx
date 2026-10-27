@@ -23,6 +23,7 @@ import {
 import {
   getCitizenOrganizations,
   getCitizenDepartments,
+  getCitizenWorkflows,
   issueCitizenTicket,
   getTicketDetails,
   trackTicketByToken,
@@ -42,13 +43,16 @@ export default function CitizenDashboard() {
   const [socketStatus, setSocketStatus] = useState('connected');
   const [delayLoading, setDelayLoading] = useState(false);
 
-  // Organizations and Departments
+  // Organizations, Departments, and Workflows
   const [organizations, setOrganizations] = useState([]);
   const [selectedOrgId, setSelectedOrgId] = useState('');
   const [departments, setDepartments] = useState([]);
   const [selectedDeptId, setSelectedDeptId] = useState('');
+  const [workflows, setWorkflows] = useState([]);
+  const [selectedWorkflowId, setSelectedWorkflowId] = useState('');
   const [priority, setPriority] = useState('NORMAL');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const idempotencyKeyRef = useRef(null);
 
   // Active Ticket state
   const [activeTicket, setActiveTicket] = useState(null);
@@ -171,29 +175,44 @@ export default function CitizenDashboard() {
     loadInitial();
   }, [loadInitial]);
 
-  // 3. Load Departments when Organization changes
+  // 3. Load Departments & Workflows when Organization changes
   useEffect(() => {
     if (!selectedOrgId) {
       setDepartments([]);
+      setWorkflows([]);
       setSelectedDeptId('');
+      setSelectedWorkflowId('');
       return;
     }
 
-    async function loadDepts() {
+    async function loadDeptsAndWorkflows() {
       try {
-        const depts = await getCitizenDepartments(selectedOrgId);
+        const [depts, wfs] = await Promise.all([
+          getCitizenDepartments(selectedOrgId).catch(() => []),
+          getCitizenWorkflows(selectedOrgId).catch(() => [])
+        ]);
         setDepartments(depts || []);
-        if (depts && depts.length > 0) {
-          setSelectedDeptId(depts[0]._id);
+        setWorkflows(wfs || []);
+
+        if (wfs && wfs.length > 0) {
+          setSelectedWorkflowId(wfs[0]._id);
+          const entryDept = wfs[0].entryDepartmentId?._id || wfs[0].entryDepartmentId;
+          setSelectedDeptId(entryDept ? entryDept.toString() : (depts[0]?._id ?? ''));
+        } else if (depts && depts.length > 0) {
+          setSelectedWorkflowId('');
+          const entryDept = depts.find(d => d.isEntryLevel) || depts[0];
+          setSelectedDeptId(entryDept._id);
         } else {
           setSelectedDeptId('');
+          setSelectedWorkflowId('');
         }
       } catch (err) {
-        console.error('Error fetching departments:', err);
+        console.error('Error fetching services & workflows:', err);
         setDepartments([]);
+        setWorkflows([]);
       }
     }
-    loadDepts();
+    loadDeptsAndWorkflows();
   }, [selectedOrgId]);
 
   // 4. Request ticket snooze / delay
@@ -290,7 +309,7 @@ export default function CitizenDashboard() {
   // 5. Issue real ticket (Step 3 action)
   const handleGetTicket = async (e) => {
     e.preventDefault();
-    if (!selectedOrgId || !selectedDeptId) {
+    if (!selectedOrgId || (!selectedDeptId && !selectedWorkflowId)) {
       setFeedback({ type: 'error', text: 'Please select an office and a service first.' });
       return;
     }
@@ -299,11 +318,16 @@ export default function CitizenDashboard() {
       setIsSubmitting(true);
       setFeedback(null);
 
-      const idempotencyKey = `idem_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+      // Generate idempotencyKey once per issuance intent and reuse across retries
+      if (!idempotencyKeyRef.current) {
+        idempotencyKeyRef.current = `idem_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+      }
+      const idempotencyKey = idempotencyKeyRef.current;
 
       const res = await issueCitizenTicket({
         organizationId: selectedOrgId,
         departmentId: selectedDeptId,
+        serviceWorkflowId: selectedWorkflowId || undefined,
         priority,
         source: 'WEB',
         idempotencyKey
@@ -312,6 +336,9 @@ export default function CitizenDashboard() {
       if (!res.ticket) {
         throw new Error(res.error || 'Failed to issue ticket');
       }
+
+      // Successful issuance: clear key for subsequent user intents
+      idempotencyKeyRef.current = null;
 
       await loadTicket(res.ticket.trackingToken || res.ticket._id);
       setActiveTab('ticket');
@@ -567,28 +594,82 @@ export default function CitizenDashboard() {
             {/* Step 2: Select a Service */}
             <div className="space-y-2">
               <label htmlFor="select-service" className="block text-xs font-bold uppercase tracking-wider text-gray-700">
-                Step 2: Select a Service / Department
+                Step 2: Select a Service {workflows.length > 0 ? 'Workflow' : '/ Department'}
               </label>
-              <select
-                id="select-service"
-                value={selectedDeptId}
-                onChange={(e) => setSelectedDeptId(e.target.value)}
-                disabled={departments.length === 0}
-                className="w-full bg-white border border-gray-300 text-neutral-900 text-sm rounded-xl p-3 focus:outline-none focus:border-emerald-600 cursor-pointer disabled:bg-gray-100"
-              >
-                {departments.length === 0 ? (
-                  <option value="">No services available for this office</option>
-                ) : (
-                  departments.map((dept) => (
-                    <option key={dept._id} value={dept._id}>
-                      {dept.name} {dept.roomNumber ? `(Room ${dept.roomNumber})` : ''}
-                    </option>
-                  ))
-                )}
-              </select>
-              <p className="text-xs text-gray-500">
-                {selectedDept ? `Standard service desk for ${selectedDept.name}.` : 'Please pick an office first.'}
-              </p>
+              {workflows.length > 0 ? (
+                <div className="space-y-2">
+                  <select
+                    id="select-service"
+                    value={selectedWorkflowId}
+                    onChange={(e) => {
+                      const wfId = e.target.value;
+                      setSelectedWorkflowId(wfId);
+                      const wf = workflows.find((w) => w._id === wfId);
+                      if (wf) {
+                        const entryDeptId = wf.entryDepartmentId?._id || wf.entryDepartmentId;
+                        setSelectedDeptId(entryDeptId ? entryDeptId.toString() : '');
+                      }
+                    }}
+                    className="w-full bg-white border border-gray-300 text-neutral-900 text-sm rounded-xl p-3 focus:outline-none focus:border-emerald-600 cursor-pointer"
+                  >
+                    {workflows.map((wf) => (
+                      <option key={wf._id} value={wf._id}>
+                        {wf.name}
+                      </option>
+                    ))}
+                  </select>
+                  {(() => {
+                    const currentWf = workflows.find((w) => w._id === selectedWorkflowId) || workflows[0];
+                    if (!currentWf) return null;
+                    const entryDeptName = currentWf.entryDepartmentId?.name || 'Reception';
+                    return (
+                      <div className="p-3 bg-emerald-50/60 rounded-xl border border-emerald-100 text-xs text-emerald-950 space-y-1">
+                        <div className="font-semibold text-emerald-900 flex items-center gap-1.5">
+                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                          <span>Entry Desk: {entryDeptName}</span>
+                        </div>
+                        {currentWf.description && <p className="text-emerald-800 text-[11px]">{currentWf.description}</p>}
+                        {Array.isArray(currentWf.stages) && currentWf.stages.length > 0 && (
+                          <div className="text-[11px] text-emerald-700 pt-1 flex items-center gap-1 flex-wrap">
+                            <span className="font-medium text-emerald-900">Stages:</span>
+                            {currentWf.stages.map((s, idx) => (
+                              <span key={idx} className="inline-flex items-center gap-1">
+                                <span className="bg-white/80 px-1.5 py-0.5 rounded text-[10px] border border-emerald-200">
+                                  {s.name || s.departmentId?.name || `Stage ${idx + 1}`}
+                                </span>
+                                {idx < currentWf.stages.length - 1 && <ArrowRight className="w-2.5 h-2.5 text-emerald-400" />}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
+                </div>
+              ) : (
+                <>
+                  <select
+                    id="select-service"
+                    value={selectedDeptId}
+                    onChange={(e) => setSelectedDeptId(e.target.value)}
+                    disabled={departments.length === 0}
+                    className="w-full bg-white border border-gray-300 text-neutral-900 text-sm rounded-xl p-3 focus:outline-none focus:border-emerald-600 cursor-pointer disabled:bg-gray-100"
+                  >
+                    {departments.length === 0 ? (
+                      <option value="">No services available for this office</option>
+                    ) : (
+                      departments.map((dept) => (
+                        <option key={dept._id} value={dept._id}>
+                          {dept.name} {dept.isEntryLevel ? '(Entry Point)' : ''} {dept.roomNumber ? `(Room ${dept.roomNumber})` : ''}
+                        </option>
+                      ))
+                    )}
+                  </select>
+                  <p className="text-xs text-gray-500">
+                    {selectedDept ? `Service desk for ${selectedDept.name}.` : 'Please pick an office first.'}
+                  </p>
+                </>
+              )}
             </div>
 
             {/* Priority selection - simple and unobtrusive */}

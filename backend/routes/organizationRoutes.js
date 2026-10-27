@@ -198,6 +198,8 @@ router.get('/:orgId/departments', async (req, res) => {
     console.error('ERROR in GET /api/v1/orgs/:orgId/departments:', err);
     res.status(500).json({ error: 'Failed to fetch departments', details: err.message });
   }
+});
+
 // POST /api/v1/orgs/:orgId/service-workflows - Create a Service Workflow
 const createWorkflowHandler = async (req, res) => {
   try {

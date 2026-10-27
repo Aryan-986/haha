@@ -18,11 +18,26 @@ export async function getCitizenDepartments(orgId) {
 }
 
 /**
+ * Fetch active service workflows for a specific organization
+ */
+export async function getCitizenWorkflows(orgId) {
+  if (!orgId) return [];
+  try {
+    const response = await apiClient.get(`/api/v1/orgs/${orgId}/service-workflows`);
+    return response.data || [];
+  } catch (err) {
+    console.warn('Workflow fetch fallback:', err.message);
+    return [];
+  }
+}
+
+/**
  * Issue a real queue ticket for the citizen
  */
 export async function issueCitizenTicket({
   organizationId,
   departmentId,
+  serviceWorkflowId,
   serviceId,
   priority = 'NORMAL',
   source = 'WEB',
@@ -39,6 +54,7 @@ export async function issueCitizenTicket({
     {
       organizationId,
       departmentId,
+      serviceWorkflowId,
       serviceId,
       priority,
       source,

@@ -530,6 +530,18 @@ async function transferTicket({ ticketId, targetDepartmentId, targetCounterId, w
     throw err;
   }
 
+  // Idempotency: If ticket is already transferred to target department, return current state
+  if (ticket.status === 'TRANSFERRED' && ticket.currentDepartmentId.toString() === targetDepartmentId.toString()) {
+    return {
+      success: true,
+      ticket,
+      ticketNumber: ticket.ticketNumber,
+      counterNumber: ticket.counterNumber || 1,
+      roomNumber: ticket.roomNumber || '',
+      isDuplicate: true
+    };
+  }
+
   // Validate Workflow Transition if serviceWorkflowId is configured
   if (ticket.serviceWorkflowId) {
     const workflow = await ServiceWorkflow.findById(ticket.serviceWorkflowId);
