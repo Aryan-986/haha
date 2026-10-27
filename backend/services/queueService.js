@@ -530,6 +530,27 @@ async function transferTicket({ ticketId, targetDepartmentId, targetCounterId, w
     throw err;
   }
 
+  // Validate Workflow Transition if serviceWorkflowId is configured
+  if (ticket.serviceWorkflowId) {
+    const workflow = await ServiceWorkflow.findById(ticket.serviceWorkflowId);
+    if (workflow && Array.isArray(workflow.stages) && workflow.stages.length > 0) {
+      const currentStage = workflow.stages.find(
+        (s) => s.departmentId.toString() === ticket.currentDepartmentId.toString()
+      );
+      if (currentStage && Array.isArray(currentStage.allowedNextDepartments) && currentStage.allowedNextDepartments.length > 0) {
+        const isAllowed = currentStage.allowedNextDepartments.some(
+          (dId) => dId.toString() === targetDepartmentId.toString()
+        );
+        if (!isAllowed) {
+          const err = new Error('Workflow Violation: Target department is not an allowed next stage in the service workflow');
+          err.status = 400;
+          err.code = 'INVALID_WORKFLOW_TRANSITION';
+          throw err;
+        }
+      }
+    }
+  }
+
   // Optional destination counter/room validation
   let targetCounter = null;
   if (targetCounterId) {
@@ -569,6 +590,9 @@ async function transferTicket({ ticketId, targetDepartmentId, targetCounterId, w
   }
   ticket.currentCounterId = null;
   ticket.currentWorkerId = null;
+  if (ticket.serviceWorkflowId) {
+    ticket.currentStageIndex = (ticket.currentStageIndex || 0) + 1;
+  }
 
   const targetWaitingCount = await Ticket.countDocuments({
     organizationId: ticket.organizationId,
