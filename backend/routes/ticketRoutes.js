@@ -49,21 +49,28 @@ const ticketIssuanceLimit = rateLimit({
  */
 router.post('/', ticketIssuanceLimit, async (req, res) => {
   try {
-    const { organizationId, departmentId, serviceId, priority, source, roomNumber, idempotencyKey } = req.body;
+    const { organizationId, departmentId, serviceId, serviceWorkflowId, priority, source, roomNumber, idempotencyKey } = req.body;
     const key = req.headers['idempotency-key'] || idempotencyKey;
 
     // Validate required fields
     if (!organizationId || !isValidObjectId(organizationId)) {
       return res.status(400).json({ success: false, error: 'Valid organizationId is required' });
     }
-    if (!departmentId || !isValidObjectId(departmentId)) {
+    if (!departmentId && !serviceWorkflowId) {
+      return res.status(400).json({ success: false, error: 'Valid departmentId or serviceWorkflowId is required' });
+    }
+    if (departmentId && !isValidObjectId(departmentId)) {
       return res.status(400).json({ success: false, error: 'Valid departmentId is required' });
+    }
+    if (serviceWorkflowId && !isValidObjectId(serviceWorkflowId)) {
+      return res.status(400).json({ success: false, error: 'Valid serviceWorkflowId is required' });
     }
 
     const result = await queueService.issueTicket({
       organizationId,
       departmentId,
       serviceId,
+      serviceWorkflowId,
       priority,
       source: source || 'WEB',
       roomNumber,
